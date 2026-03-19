@@ -90,7 +90,7 @@ from metadata_utils import get_script_metadata
 output_notebook()
 
 # Variable for the dataset to be processed
-dataset = "SMPS"  # Change this variable as needed
+dataset = "MiniAMS"  # Change this variable as needed
 
 # Load burn log once
 burn_log_path = get_common_file("burn_log")
@@ -251,7 +251,7 @@ INSTRUMENT_CONFIG = {
         "normalize_pollutant": "Organic (µg/m³)",
         "special_cases": {},
         "datetime_column": "DateTime",
-        "burn_range": range(1, 4),  # Burns 1-3 only
+        "burn_range": range(1, 11),  # Burns 1-10
         "location_notes": "Chemical composition measurements (70-700nm aerodynamic diameter)",
         "baseline_values": None,  # Will be calculated during processing
         "baseline_source": "burn1",  # Use burn1 as baseline

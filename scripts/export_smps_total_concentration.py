@@ -39,9 +39,6 @@ import pandas as pd
 # Set this to 'MassConc' or 'NumConc'
 CONCENTRATION_TYPE = "MassConc"  # Options: 'MassConc' or 'NumConc'
 
-# Set output directory path
-OUTPUT_PATH = "C:/Users/nml/Downloads/exported_data"
-
 # ======================================
 
 
@@ -183,7 +180,7 @@ def read_transposed_smps_file(file_path, conc_type="MassConc"):
     return result_df
 
 
-def process_all_smps_files(conc_type="MassConc", output_dir=None):
+def process_all_smps_files(conc_type="MassConc"):
     """
     Process all SMPS files of the specified concentration type and export to CSV.
 
@@ -191,8 +188,6 @@ def process_all_smps_files(conc_type="MassConc", output_dir=None):
     -----------
     conc_type : str
         'MassConc' or 'NumConc'
-    output_dir : str or Path
-        Directory to save the output CSV file
     """
     size_units = "nm (µg/m³)" if conc_type == "MassConc" else "nm (#/cm³)"
 
@@ -204,6 +199,7 @@ def process_all_smps_files(conc_type="MassConc", output_dir=None):
     # Load configuration
     config = load_config()
     smps_path = Path(config["instruments"]["smps"]["path"])
+    output_dir = Path(config["common_folders"]["smps_export"])
 
     print(f"SMPS Data Directory: {smps_path}")
 
@@ -239,7 +235,7 @@ def process_all_smps_files(conc_type="MassConc", output_dir=None):
             print(f"  Date range: {df['datetime'].min()} to {df['datetime'].max()}")
 
         except Exception as e:
-            print(f"  ✗ Error processing {file_path.name}: {str(e)}")
+            print(f"  Error processing {file_path.name}: {str(e)}")
             continue
 
     if len(all_data) == 0:
@@ -271,7 +267,15 @@ def process_all_smps_files(conc_type="MassConc", output_dir=None):
     # Fixed columns in desired order
     meta_cols = [c for c in ["Lower Size(nm)", "Upper Size(nm)"] if c in combined_df.columns]
     stat_cols = [
-        c for c in ["D50(nm)", "Median(nm)", "Mean(nm)", "Geo. Mean(nm)", "Mode(nm)", "Geo. Std. Dev."]
+        c
+        for c in [
+            "D50(nm)",
+            "Median(nm)",
+            "Mean(nm)",
+            "Geo. Mean(nm)",
+            "Mode(nm)",
+            "Geo. Std. Dev.",
+        ]
         if c in combined_df.columns
     ]
 
@@ -285,9 +289,7 @@ def process_all_smps_files(conc_type="MassConc", output_dir=None):
     combined_df = combined_df[final_col_order]
 
     print(f"Total data points: {len(combined_df)}")
-    print(
-        f"Date range: {combined_df['datetime'].min()} to {combined_df['datetime'].max()}"
-    )
+    print(f"Date range: {combined_df['datetime'].min()} to {combined_df['datetime'].max()}")
 
     # Export to CSV
     if output_dir is None:
@@ -324,4 +326,4 @@ if __name__ == "__main__":
         sys.exit(1)
 
     # Process files
-    process_all_smps_files(conc_type=CONCENTRATION_TYPE, output_dir=OUTPUT_PATH)
+    process_all_smps_files(conc_type=CONCENTRATION_TYPE)

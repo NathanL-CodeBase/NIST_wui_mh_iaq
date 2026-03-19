@@ -185,9 +185,7 @@ def read_instrument_data(instrument, pollutant_types_dict):
             burn = row["burn"]
             decay = row["decay"]
             uncertainty = row["decay_uncertainty"]
-            crboxes = (
-                row["CRboxes"] if "CRboxes" in row and pd.notna(row["CRboxes"]) else 1
-            )
+            crboxes = row["CRboxes"] if "CRboxes" in row and pd.notna(row["CRboxes"]) else 1
 
             result[burn] = {
                 "decay": decay,
@@ -227,9 +225,7 @@ class BaselineCalculator:
             baseline_values = []
             for burn in self.baseline_burns:
                 if burn in data_by_instrument[instrument]:
-                    baseline_values.append(
-                        data_by_instrument[instrument][burn]["decay"]
-                    )
+                    baseline_values.append(data_by_instrument[instrument][burn]["decay"])
 
             if baseline_values:
                 baselines[instrument] = np.mean(baseline_values)
@@ -304,9 +300,7 @@ def create_baseline_corrected_data(
         for burn in burns_to_process:
             if burn in data_by_instrument[instrument]:
                 original_decay = data_by_instrument[instrument][burn]["decay"]
-                original_uncertainty = data_by_instrument[instrument][burn][
-                    "uncertainty"
-                ]
+                original_uncertainty = data_by_instrument[instrument][burn]["uncertainty"]
                 crboxes = data_by_instrument[instrument][burn]["CRboxes"]
 
                 # Baseline correction: subtract baseline
@@ -342,9 +336,7 @@ def calculate_mean_data(corrected_data, burns_to_process):
 
         for instrument in corrected_data:
             if burn in corrected_data[instrument]:
-                baseline_corrected_values.append(
-                    corrected_data[instrument][burn]["decay"]
-                )
+                baseline_corrected_values.append(corrected_data[instrument][burn]["decay"])
                 baseline_corrected_uncertainties.append(
                     corrected_data[instrument][burn]["uncertainty"]
                 )
@@ -439,9 +431,7 @@ def perform_z_test_comparison(mu_a, sd_a, mu_b, sd_b, label_a, label_b, output_f
     output_file.write(f"    Combined variance: {var_diff:.6f}\n")
     output_file.write(f"    Z-statistic: {z_stat:.4f}\n")
     output_file.write(f"    P-value: {p_value:.6f}\n")
-    output_file.write(
-        f"    Significant at α={alpha}: {is_significant} ({sig_indicator})\n"
-    )
+    output_file.write(f"    Significant at α={alpha}: {is_significant} ({sig_indicator})\n")
 
     return {
         "label_a": label_a,
@@ -457,9 +447,7 @@ def perform_z_test_comparison(mu_a, sd_a, mu_b, sd_b, label_a, label_b, output_f
     }
 
 
-def perform_pm04_filter_count_ztest(
-    data_by_instrument, baseline_calculator, output_file
-):
+def perform_pm04_filter_count_ztest(data_by_instrument, baseline_calculator, output_file):
     """
     Perform PM0.4 filter count analysis using z-test approach.
     Compares 1 PAC, 2 PACs, and 4 PACs (all pairwise comparisons).
@@ -519,9 +507,7 @@ def perform_pm04_filter_count_ztest(
     return {"filter_count": results}
 
 
-def perform_pm04_new_vs_used_ztest(
-    data_by_instrument, baseline_calculator, output_file
-):
+def perform_pm04_new_vs_used_ztest(data_by_instrument, baseline_calculator, output_file):
     """
     Perform PM0.4 new vs used filter analysis using z-test approach.
     """
@@ -582,9 +568,7 @@ def perform_pm04_new_vs_used_ztest(
     return {"new_vs_used": results}
 
 
-def perform_pm04_merv_comparison_ztest(
-    data_by_instrument, baseline_calculator, output_file
-):
+def perform_pm04_merv_comparison_ztest(data_by_instrument, baseline_calculator, output_file):
     """
     Perform PM0.4 MERV filter comparison using z-test approach.
     Compares MERV12A (burn7, burn8) vs MERV13 (burn9, burn10).
@@ -725,9 +709,7 @@ def perform_filter_count_analysis(
         else:
             sig_indicator = "ns"
 
-        output_file.write(
-            f"  Significant at α={alpha}: {is_significant} ({sig_indicator})\n"
-        )
+        output_file.write(f"  Significant at α={alpha}: {is_significant} ({sig_indicator})\n")
 
         # Perform pairwise t-tests
         output_file.write("\n  Pairwise t-tests:\n")
@@ -848,9 +830,7 @@ def perform_new_vs_used_analysis(
         else:
             sig_indicator = "ns"
 
-        output_file.write(
-            f"  Significant at α={alpha}: {is_significant} ({sig_indicator})\n"
-        )
+        output_file.write(f"  Significant at α={alpha}: {is_significant} ({sig_indicator})\n")
 
         return {
             "f_stat": f_stat,
@@ -930,9 +910,7 @@ def perform_merv_comparison_analysis(
         else:
             sig_indicator = "ns"
 
-        output_file.write(
-            f"  Significant at α={alpha}: {is_significant} ({sig_indicator})\n"
-        )
+        output_file.write(f"  Significant at α={alpha}: {is_significant} ({sig_indicator})\n")
 
         return {
             "f_stat": f_stat,
@@ -1059,13 +1037,9 @@ def perform_two_way_anova_filter_analysis(
     from scipy.stats import f as f_dist
 
     p_filter = 1 - f_dist.cdf(f_filter, df_filter, df_error) if f_filter > 0 else 1
-    p_condition = (
-        1 - f_dist.cdf(f_condition, df_condition, df_error) if f_condition > 0 else 1
-    )
+    p_condition = 1 - f_dist.cdf(f_condition, df_condition, df_error) if f_condition > 0 else 1
     p_interaction = (
-        1 - f_dist.cdf(f_interaction, df_interaction, df_error)
-        if f_interaction > 0
-        else 1
+        1 - f_dist.cdf(f_interaction, df_interaction, df_error) if f_interaction > 0 else 1
     )
 
     # Write results
@@ -1093,9 +1067,7 @@ def perform_two_way_anova_filter_analysis(
             return "ns"
 
     output_file.write(f"\n  Significance at α={alpha}:\n")
-    output_file.write(
-        f"    Filter Type:    {p_filter < alpha} ({get_sig_indicator(p_filter)})\n"
-    )
+    output_file.write(f"    Filter Type:    {p_filter < alpha} ({get_sig_indicator(p_filter)})\n")
     output_file.write(
         f"    Condition:      {p_condition < alpha} ({get_sig_indicator(p_condition)})\n"
     )
@@ -1139,9 +1111,7 @@ def generate_statistical_summary(summary_results, summary_file_path):
         f.write("STATISTICAL SUMMARY: WUI DECAY RATE ANALYSIS\n")
         f.write("=" * 80 + "\n")
         f.write(f"Significance level: α = {STATISTICAL_CONFIG['alpha']}\n")
-        f.write(
-            "Significance indicators: *** p<0.001, ** p<0.01, * p<0.05, ns not significant\n"
-        )
+        f.write("Significance indicators: *** p<0.001, ** p<0.01, * p<0.05, ns not significant\n")
         f.write("=" * 80 + "\n\n")
 
         # PM0.4 Results (Z-test)
@@ -1349,9 +1319,7 @@ def create_transposed_bar_chart(
                 elif "contributing_instruments" in pm_data[burn]:
                     instruments_list = pm_data[burn]["contributing_instruments"]
 
-                instruments_str = (
-                    ", ".join(instruments_list) if instruments_list else ""
-                )
+                instruments_str = ", ".join(instruments_list) if instruments_list else ""
 
                 # Determine if used filter
                 is_used = burn in ["burn3", "burn8", "burn10"]
@@ -1388,9 +1356,7 @@ def create_transposed_bar_chart(
     ]  # #003f5c, #665191, #d45087
 
     # Check if conditions already include New/Used in labels (for MERV chart)
-    conditions_include_new_used = all(
-        "New" in c or "Used" in c for c in unique_conditions
-    )
+    conditions_include_new_used = all("New" in c or "Used" in c for c in unique_conditions)
 
     # If conditions include filter types (MERV12A, MERV13), set up colors by filter type
     filter_type_colors = {}
@@ -1564,14 +1530,14 @@ def create_transposed_bar_chart(
             p.y_range = Range1d(0, 4)
         else:
             p.y_range = Range1d(0, 3.5)
+    elif "filter_condition_combined" in config.get("filename", ""):
+        p.y_range = Range1d(0, 2.7)
     else:
         p.y_range = Range1d(0, 2.5)
 
     # Set y-axis label (use custom label if provided, otherwise use default)
     if y_axis_label is None:
-        p.yaxis.axis_label = (
-            "Baseline-Corrected Decay Rate per Portable Air Cleaner (h⁻¹)"
-        )
+        p.yaxis.axis_label = "Baseline-Corrected Decay Rate per Portable Air Cleaner (h⁻¹)"
     else:
         p.yaxis.axis_label = y_axis_label
     p.yaxis.formatter = NumeralTickFormatter(format="0.0")
@@ -1647,9 +1613,7 @@ pm25_data_raw = process_data_for_charts(pollutant_types_pm25, "PM2.5")
 pm10_data_raw = process_data_for_charts(pollutant_types_pm10, "PM10")
 
 # Create centralized baseline calculator
-baseline_calculator = BaselineCalculator(
-    pm04_data_raw, pm1_data_raw, pm25_data_raw, pm10_data_raw
-)
+baseline_calculator = BaselineCalculator(pm04_data_raw, pm1_data_raw, pm25_data_raw, pm10_data_raw)
 
 # Dictionary to store key statistical results for summary
 summary_results = {"PM0.4": {}, "PM1": {}, "PM2.5": {}, "PM10": {}}
@@ -1683,9 +1647,7 @@ with open(stats_file_path, "w", encoding="utf-8") as stats_file:
     pm04_new_vs_used = perform_pm04_new_vs_used_ztest(
         pm04_data_raw, baseline_calculator, stats_file
     )
-    pm04_merv = perform_pm04_merv_comparison_ztest(
-        pm04_data_raw, baseline_calculator, stats_file
-    )
+    pm04_merv = perform_pm04_merv_comparison_ztest(pm04_data_raw, baseline_calculator, stats_file)
 
     summary_results["PM0.4"] = {**pm04_filter_count, **pm04_new_vs_used, **pm04_merv}
 
@@ -1836,7 +1798,7 @@ chart_configs = [
             "PM2.5",
         ],  # all available PM types 'PM0.4', 'PM1', 'PM2.5', 'PM10'
         "normalize_by_crboxes": False,  # Show total decay rate, not per-PAC
-        "y_axis_label": "Baseline-Corrected Decay Rate (h⁻¹)",
+        "y_axis_label": "Baseline-Corrected (Total) Decay Rate (h⁻¹)",
     },
 ]
 
@@ -1856,14 +1818,10 @@ for config in chart_configs:
 
     # Get list of instruments to use
     if config.get("use_matching_instruments", False):
-        matching_instruments = get_matching_instruments_for_burns(
-            pm1_data_raw, config["burns"]
-        )
+        matching_instruments = get_matching_instruments_for_burns(pm1_data_raw, config["burns"])
         exclude_instruments = config.get("exclude_instruments", [])
         exclude_instruments = [
-            i
-            for i in instruments
-            if i not in matching_instruments and i not in exclude_instruments
+            i for i in instruments if i not in matching_instruments and i not in exclude_instruments
         ]
         config["exclude_instruments"] = exclude_instruments
 

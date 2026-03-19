@@ -9,17 +9,18 @@ Author: Nathan Lima
 Date: 2025-12-17
 Institution: National Institute of Standards and Technology (NIST)
 """
+
 import json
-from pathlib import Path
 import socket
 import sys
+from pathlib import Path
 from typing import List
 
 
 class WUIDataPathResolver:
     """Resolves data paths for WUI research instruments across machines."""
 
-    def __init__(self, config_file='data_config.json'):
+    def __init__(self, config_file="data_config.json"):
         self.repo_root = Path(__file__).parent.parent.resolve()
         self.config_file = self.repo_root / config_file
         self.machine_name = socket.gethostname()
@@ -48,29 +49,29 @@ Step 3: Example configuration for this machine ({self.machine_name}):
 
 {{
   "machine_name": "{self.machine_name}",
-  "data_root": "C:/Users/Nathan/Documents/NIST/WUI_smoke",
+  "data_root": "C:/Users/<user_name>/Documents/NIST/WUI_smoke",
 
   "instruments": {{
     "aerotrak_bedroom": {{
-      "path": "C:/Users/Nathan/Documents/NIST/WUI_smoke/burn_data/aerotraks/bedroom2",
+      "path": "C:/Users/<user_name>/Documents/NIST/WUI_smoke/burn_data/aerotraks/bedroom2",
       "description": "AeroTrak particle counter - Bedroom2",
       "file_pattern": "*.xlsx"
     }},
     "aerotrak_kitchen": {{
-      "path": "C:/Users/Nathan/Documents/NIST/WUI_smoke/burn_data/aerotraks/kitchen",
+      "path": "C:/Users/<user_name>/Documents/NIST/WUI_smoke/burn_data/aerotraks/kitchen",
       "description": "AeroTrak particle counter - Kitchen",
       "file_pattern": "*.xlsx"
     }},
     "dusttrak": {{
-      "path": "C:/Users/Nathan/Documents/NIST/WUI_smoke/burn_data/dusttrak",
+      "path": "C:/Users/<user_name>/Documents/NIST/WUI_smoke/burn_data/dusttrak",
       "description": "DustTrak aerosol monitor",
       "file_pattern": "*.xlsx"
     }}
   }},
 
   "common_folders": {{
-    "burn_log": "C:/Users/Nathan/Documents/NIST/WUI_smoke/burn_log.xlsx",
-    "output_figures": "C:/Users/Nathan/Documents/NIST/WUI_smoke/Paper_figures"
+    "burn_log": "C:/Users/<user_name>/Documents/NIST/WUI_smoke/burn_log.xlsx",
+    "output_figures": "C:/Users/<user_name>/Documents/NIST/WUI_smoke/Paper_figures"
   }}
 }}
 
@@ -83,7 +84,7 @@ Step 4: Run setup verification
             raise FileNotFoundError(error_msg)
 
         try:
-            with open(self.config_file, 'r', encoding='utf-8') as f:
+            with open(self.config_file, "r", encoding="utf-8") as f:
                 config = json.load(f)
             print(f"[OK] Loaded WUI data config for: {config.get('machine_name', 'unknown')}")
             return config
@@ -110,7 +111,7 @@ Step 4: Run setup verification
         >>> aerotrak_path = resolver.get_instrument_path('aerotrak_bedroom')
         >>> data_file = aerotrak_path / 'all_data.xlsx'
         """
-        instruments = self.config.get('instruments', {})
+        instruments = self.config.get("instruments", {})
 
         if instrument not in instruments:
             available = list(instruments.keys())
@@ -120,7 +121,7 @@ Step 4: Run setup verification
                 f"Update your data_config.json to add this instrument."
             )
 
-        path_str = instruments[instrument]['path']
+        path_str = instruments[instrument]["path"]
         path = Path(path_str).resolve()
 
         if not path.exists():
@@ -155,12 +156,19 @@ Step 4: Run setup verification
         inst_path = self.get_instrument_path(instrument)
 
         # Get pattern from config if not provided
-        search_pattern = pattern if pattern is not None else self.config['instruments'][instrument].get('file_pattern', '*.*')
+        search_pattern = (
+            pattern
+            if pattern is not None
+            else self.config["instruments"][instrument].get("file_pattern", "*.*")
+        )
 
         files = sorted(inst_path.glob(search_pattern))
 
         if not files:
-            print(f"[WARNING] No files found matching '{search_pattern}' in {inst_path}", file=sys.stderr)
+            print(
+                f"[WARNING] No files found matching '{search_pattern}' in {inst_path}",
+                file=sys.stderr,
+            )
 
         return files
 
@@ -184,7 +192,7 @@ Step 4: Run setup verification
         >>> burn_log = resolver.get_common_file('burn_log')
         >>> df = pd.read_excel(burn_log, sheet_name='Sheet2')
         """
-        common = self.config.get('common_folders', {})
+        common = self.config.get("common_folders", {})
 
         if file_key not in common:
             available = list(common.keys())
@@ -194,23 +202,23 @@ Step 4: Run setup verification
 
     def list_instruments(self):
         """Print all configured instruments and their status."""
-        print("\n" + "="*100)
+        print("\n" + "=" * 100)
         print("WUI Research Data Configuration")
-        print("="*100)
+        print("=" * 100)
         print(f"\nMachine: {self.machine_name}")
         print(f"Config:  {self.config_file}")
 
-        instruments = self.config.get('instruments', {})
+        instruments = self.config.get("instruments", {})
         if instruments:
             print(f"\n{'Instrument':<20} | Status | Files | Path")
             print("-" * 100)
 
             for name, info in instruments.items():
-                path = Path(info['path'])
+                path = Path(info["path"])
                 exists = "OK" if path.exists() else "MISS"
 
                 if path.exists():
-                    pattern = info.get('file_pattern', '*.*')
+                    pattern = info.get("file_pattern", "*.*")
                     file_count = len(list(path.glob(pattern)))
                     file_info = f"{file_count:>5}"
                 else:
@@ -225,7 +233,7 @@ Step 4: Run setup verification
         else:
             print("\n[WARNING] No instruments configured!")
 
-        common = self.config.get('common_folders', {})
+        common = self.config.get("common_folders", {})
         if common:
             print(f"\n{'Common File':<25} | Status | Path")
             print("-" * 100)
@@ -243,11 +251,12 @@ Step 4: Run setup verification
 
     def get_data_root(self) -> Path:
         """Get the root data directory."""
-        return Path(self.config.get('data_root', self.repo_root / 'data')).resolve()
+        return Path(self.config.get("data_root", self.repo_root / "data")).resolve()
 
 
 # Convenience instance for easy importing
 resolver = WUIDataPathResolver()
+
 
 # Convenience functions
 def get_instrument_path(instrument: str) -> Path:

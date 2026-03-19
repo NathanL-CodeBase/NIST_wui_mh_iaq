@@ -4,7 +4,7 @@ Repository for NIST WUI manufactured home indoor air quality (IAQ) study Python 
 
 ## Project Overview
 
-This project analyzes indoor air quality during simulated wildfire smoke infiltration events in a manufactured home (MH) test structure. The research investigates the effectiveness of various mitigation strategies for protecting indoor environments from wildfire smoke:
+This project analyzes indoor air quality during simulated wildfire smoke infiltration events in the NIST [Indoor Air Quality (IAQ) Test House](https://www.nist.gov/laboratories/tools-instruments/indoor-air-quality-test-house). The research investigates the effectiveness of various mitigation strategies for protecting indoor environments from wildfire smoke:
 
 - Particulate matter (PM) concentration dynamics during smoke infiltration events
 - Clean Air Delivery Rate (CADR) calculations for air cleaning devices
@@ -13,6 +13,10 @@ This project analyzes indoor air quality during simulated wildfire smoke infiltr
 - Decay rate characterization for different mitigation strategies
 - Filter performance evaluation (MERV 12A and MERV 13)
 - Compartmentalization strategy comparison
+
+## Disclaimer
+
+Certain commercial equipment, instruments, software, or materials are identified in this repository in order to specify the experimental and analytical procedures adequately. Such identification is not intended to imply recommendation or endorsement of any product or service by NIST, nor is it intended to imply that the materials or equipment identified are necessarily the best available for the purpose.
 
 ## Repository Structure
 
@@ -342,7 +346,7 @@ where *V* is the effective room volume (m³). When two baseline burns are availa
 | AeroTrak Bedroom | TSI AeroTrak 9510 | Optical particle counting | 1–10 |
 | AeroTrak Kitchen | TSI AeroTrak 9510 | Optical particle counting | 1–10 |
 | DustTrak | TSI DRX 8533 | Real-time aerosol monitoring | 1–10 |
-| MiniAMS | Mini Aerosol Mass Spectrometer | Chemical species analysis | 1–3 |
+| MiniAMS | Mini Aerosol Mass Spectrometer | Chemical species analysis | 1–10 |
 | PurpleAir | PA-II-SD | Low-cost PM monitoring | 6–10 |
 | QuantAQ Bedroom | MODULAIR-PM (MOD-PM-00194) | PM monitoring | 4–10 |
 | QuantAQ Kitchen | MODULAIR-PM (MOD-PM-00197) | PM monitoring | 4–10 |
@@ -380,7 +384,7 @@ If you use this software, please cite it as:
 
 ## Acknowledgments
 
-This research was conducted at the National Institute of Standards and Technology (NIST) as part of the Indoor Air Quality and Ventilation Group and Wildland-Urban Interface Fire Group.
+This research was conducted at the National Institute of Standards and Technology (NIST) as part of the [Indoor Air Quality and Ventilation Group](https://www.nist.gov/el/beed/indoor-air-quality-ventilation) and [Wildland-Urban Interface Fire Group](https://www.nist.gov/el/fire/wildland-urban-interface-fire).
 
 Data collection period: April – June 2024
 
@@ -400,9 +404,6 @@ notice and disclaimer of warranty appears in all copies.
 
 See [LICENSE.md](LICENSE.md) for the full NIST licensing statement.
 
-## Disclaimer
-
-Certain commercial equipment, instruments, software, or materials are identified in this repository in order to specify the experimental and analytical procedures adequately. Such identification is not intended to imply recommendation or endorsement of any product or service by NIST, nor is it intended to imply that the materials or equipment identified are necessarily the best available for the purpose.
 
 <!-- Link definitions -->
 

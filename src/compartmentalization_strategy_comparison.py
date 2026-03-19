@@ -1125,17 +1125,17 @@ def plot_SMPScleanerairspace_data(data, instrument, output_to_file=False):
             print(f"No valid data for {selected_pollutant} in {burn_id}")
             continue
 
-        # Plot main concentration line
+        # Plot main concentration data as markers only
         legend_label = BURN_LABELS[burn_id]
 
-        p.line(
+        p.scatter(
             "Time Since Garage Closed (hours)",
             selected_pollutant,
             source=source,
             legend_label=legend_label,
-            line_width=1.5,
+            size=5,
             color=BURN_STYLES[burn_id]["color"],
-            line_dash=BURN_STYLES[burn_id]["line_dash"],
+            marker="circle",
         )
 
         # Add decay curve and annotations if parameters exist
@@ -1162,7 +1162,7 @@ def plot_SMPScleanerairspace_data(data, instrument, output_to_file=False):
                 x_fit,
                 y_fit,
                 line_color=BURN_STYLES[burn_id]["color"],
-                line_dash="dashdot",
+                line_dash="solid",
                 line_width=2,
             )
 

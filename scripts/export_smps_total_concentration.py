@@ -157,7 +157,7 @@ def read_transposed_smps_file(file_path, conc_type="MassConc"):
 
     # Diameter midpoint bins (sorted)
     for _, label, row_idx in diameter_rows:
-        result[f"{label} {size_units}"] = df.iloc[row_idx, 1:].tolist()
+        result[f"{label} {size_units}"] = pd.to_numeric(df.iloc[row_idx, 1:], errors="coerce").tolist()
 
     # Summary statistics
     for row_idx, col_name in [

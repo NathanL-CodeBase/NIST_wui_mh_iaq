@@ -302,7 +302,7 @@ def process_all_smps_files(conc_type="MassConc"):
     output_filename = f"SMPS_{conc_type}_full.csv"
     output_path = output_dir / output_filename
 
-    combined_df.to_csv(output_path, index=False)
+    combined_df.to_csv(output_path, index=False, encoding="utf-8-sig")
 
     print(f"\n{'=' * 60}")
     print("Export complete!")

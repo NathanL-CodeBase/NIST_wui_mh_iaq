@@ -220,7 +220,7 @@ try:
     assert 'PM2.5' in POLLUTANT_COLORS, "POLLUTANT_COLORS missing pollutants"
     print("  Color constants available")
 
-    print("  ✅ plotting_utils module: ALL TESTS PASSED")
+    print("  plotting_utils module: ALL TESTS PASSED")
 
 except Exception as e:
     print(f"  plotting_utils module: FAILED - {str(e)}")

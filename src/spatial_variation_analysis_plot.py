@@ -510,7 +510,7 @@ def create_spatial_variation_plot(
                     adj_r2 = best_fit["adj_r_squared"]
                     ftype = best_fit["type"]
                     print(
-                        f"    ✓ {fit_key}: {eq}, R²={r2:.4f} (adj. R²={adj_r2:.4f}) [{ftype}]"
+                        f"    OK {fit_key}: {eq}, R²={r2:.4f} (adj. R²={adj_r2:.4f}) [{ftype}]"
                     )
 
                 # Create smooth curve for visualization (now works for 2+ points)
@@ -531,11 +531,11 @@ def create_spatial_variation_plot(
                 else:
                     # Even if curve visualization fails, we still have fit_info stored above
                     print(
-                        f"    ⚠ {ratio_display} - {device_name}: Curve visualization failed (fit info still recorded)"
+                        f"    WARNING: {ratio_display} - {device_name}: Curve visualization failed (fit info still recorded)"
                     )
             elif len(all_x) == 1:
                 print(
-                    f"    ✗ {ratio_display} - {device_name}: Insufficient data ({len(all_x)} pts)"
+                    f"    SKIP: {ratio_display} - {device_name}: Insufficient data ({len(all_x)} pts)"
                 )
 
     # Customize x-axis ticks and labels

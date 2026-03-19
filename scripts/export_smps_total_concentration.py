@@ -231,7 +231,7 @@ def process_all_smps_files(conc_type="MassConc"):
                 units = df["_units"].iloc[0]
 
             n_midpoints = sum(1 for c in df.columns if c.endswith(size_units))
-            print(f"  ✓ Extracted {len(df)} data points, {n_midpoints} diameter bins")
+            print(f"  Extracted {len(df)} data points, {n_midpoints} diameter bins")
             print(f"  Date range: {df['datetime'].min()} to {df['datetime'].max()}")
 
         except Exception as e:

@@ -209,7 +209,7 @@ def diagnose_hourly_data(
                             status = f"OUTLIERS ({len(ratios)} ratios)"
                         else:
                             avg_ratio = ratios_filtered.mean()
-                            status = f"✓ OK (ratio={avg_ratio:.3f})"
+                            status = f"OK (ratio={avg_ratio:.3f})"
 
         print(
             f"  {bin_label:<12} {bedroom_count:<12} {morning_count:<12} {merged_count:<12} {status}"

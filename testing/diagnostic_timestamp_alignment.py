@@ -94,7 +94,7 @@ def analyze_timestamps():
     print(f"Morning data points: {len(morning_window)}")
 
     if bedroom_window.empty or morning_window.empty:
-        print("\n❌ One or both windows are empty!")
+        print("\nERROR: One or both windows are empty!")
         return
 
     # Check for NaN values in PM3
@@ -107,7 +107,7 @@ def analyze_timestamps():
     print(f"Morning data points: {len(morning_window)}")
 
     if bedroom_window.empty or morning_window.empty:
-        print("\n❌ All values are NaN!")
+        print("\nERROR: All values are NaN!")
         return
 
     # Show sample timestamps
@@ -191,10 +191,10 @@ def analyze_timestamps():
     print(f"\nMerged data points: {len(merged)}")
 
     if not merged.empty:
-        print(f"\n✓ Merge successful! First 5 rows:")
+        print(f"\nMerge successful! First 5 rows:")
         print(merged.head())
     else:
-        print(f"\n❌ Merge failed! No overlapping timestamps.")
+        print(f"\nERROR: Merge failed! No overlapping timestamps.")
 
         # Show the actual timestamp ranges
         print(f"\nBedroom timestamp range:")
@@ -208,9 +208,9 @@ def analyze_timestamps():
         # Check if ranges overlap at all
         if (bedroom_resample.index.max() < morning_resample.index.min() or
             morning_resample.index.max() < bedroom_resample.index.min()):
-            print(f"\n❌ NO TEMPORAL OVERLAP between the two instruments!")
+            print(f"\nERROR: NO TEMPORAL OVERLAP between the two instruments!")
         else:
-            print(f"\n⚠️  Ranges overlap but no matching minute bins!")
+            print(f"\nWARNING: Ranges overlap but no matching minute bins!")
 
             # Check for NaN after resampling
             bedroom_valid = bedroom_resample.notna().sum().iloc[0]

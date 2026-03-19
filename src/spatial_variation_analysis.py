@@ -74,10 +74,10 @@ Utility Functions Used:
         - calculate_peak_ratio: Peak concentration ratio calculation between locations
 
 Refactoring Status:
-    ✓ INSTRUMENT_CONFIG now uses centralized utilities for all configuration values
-    ✓ Significantly reduced code duplication (~120 lines saved)
-    ✓ Ensures consistency with other analysis scripts
-    ✓ Easier maintenance - updates to constants propagate automatically
+    -INSTRUMENT_CONFIG now uses centralized utilities for all configuration values
+    -Significantly reduced code duplication (~120 lines saved)
+    -Ensures consistency with other analysis scripts
+    -Easier maintenance - updates to constants propagate automatically
 
     Custom implementations retained (with justification):
     - apply_time_shift: Custom signature using INSTRUMENT_CONFIG lookup

@@ -71,6 +71,8 @@ from bokeh.models import (
     HoverTool,
     Legend,
     LegendItem,
+    LinearAxis,
+    Range1d,
     Span,
 )
 from bokeh.plotting import figure
@@ -292,6 +294,28 @@ def extract_flag_spans(df, t_col="t_hrs", flag_col="flag"):
 # PLOTTING
 # ============================================================================
 
+def compute_axis_range(df, cols, pad=1.05, floor=0.1):
+    """Compute a Range1d for a y-axis from the max of specified columns.
+
+    Parameters:
+        df (pd.DataFrame): Prepared sensor data (already filtered to plot window).
+        cols (list of str): Column names to scan (e.g., OPC_BINS or NEPH_BINS).
+        pad (float): Multiplier applied to the observed maximum (default 1.05 = 5%).
+        floor (float): Minimum value for the axis end to avoid a zero-span range.
+
+    Returns:
+        Range1d: Range starting at 0 and ending at max(observed_max * pad, floor).
+    """
+    present = [c for c in cols if c in df.columns]
+    if not present or df.empty:
+        return Range1d(start=0, end=floor)
+    vals = df[present].values.flatten()
+    vals = vals[~np.isnan(vals) & (vals >= 0)]
+    if len(vals) == 0:
+        return Range1d(start=0, end=floor)
+    return Range1d(start=0, end=max(vals.max() * pad, floor))
+
+
 def add_hover_tool(p):
     """Add a HoverTool that reports channel name, concentration, time, local
     timestamp, and raw flag value for the nearest data point.
@@ -408,6 +432,7 @@ def add_sensor_markers(p, df, sensor):
             x="t_hrs", y="value", source=source,
             fill_color=NEPH_COLORS[i], fill_alpha=MARKER_ALPHA,
             line_color=None, size=MARKER_SIZE,
+            y_range_name="neph",
         )
         items.append(LegendItem(label=f"{prefix} neph b{i}", renderers=[r]))
 
@@ -429,20 +454,38 @@ def build_sensor_panel(sensor, df, flag_spans, cr_box_hrs, panel_title,
     Returns:
         figure: Configured Bokeh panel.
     """
-    kwargs = dict(x_range=x_range) if x_range is not None else dict(x_range=PLOT_WINDOW)
+    # Use an explicit Range1d for x so BoxAnnotation coordinates are unambiguous
+    # on both the first panel (no shared range yet) and linked panels.
+    x_rng = x_range if x_range is not None else Range1d(*PLOT_WINDOW)
+
+    # Compute independent y-ranges from each data type so neither contaminates
+    # the other's axis (Bokeh auto-range can bleed across extra_y_ranges).
+    opc_range = compute_axis_range(df, OPC_BINS, pad=1.05, floor=0.1)
+    neph_range = compute_axis_range(df, NEPH_BINS, pad=1.05, floor=10.0)
 
     p = figure(
         title=panel_title,
         x_axis_label="",
-        y_axis_label="Concentration (p/cm³)",
+        y_axis_label="OPC  (p/cm³)",
+        x_range=x_rng,
+        y_range=opc_range,
         width=FIGURE_WIDTH,
         height=PANEL_HEIGHT,
         tools=TOOLS,
-        **kwargs,
     )
     p.title.text_font_size = "11pt"
     p.yaxis.axis_label_text_font_size = "10pt"
     p.grid.grid_line_alpha = 0.3
+
+    # Secondary y-axis (right) for neph bins — scaled independently from OPC
+    p.extra_y_ranges = {"neph": neph_range}
+    neph_axis = LinearAxis(
+        y_range_name="neph",
+        axis_label="Neph  (p/cm³)",
+    )
+    neph_axis.axis_label_text_font_size = "10pt"
+    p.add_layout(neph_axis, "right")
+
     add_hover_tool(p)
 
     # Flag bands behind everything else
@@ -647,9 +690,10 @@ def main():
 
             if not df.empty:
                 print(f"    {cfg['display_label']}: {len(df):,} rows in window")
-                flag_meta_parts.append(
-                    get_flag_metadata(spans, FLAG_DEFS, sensor)
-                )
+                if spans:  # only add to footer when this sensor has actual flag events
+                    flag_meta_parts.append(
+                        get_flag_metadata(spans, FLAG_DEFS, sensor)
+                    )
 
         if all(df.empty for df in data_by_sensor.values()):
             print(f"  [SKIP] No data in burn window.\n")

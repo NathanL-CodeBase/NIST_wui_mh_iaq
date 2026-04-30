@@ -155,6 +155,11 @@ NEPH_COLORS = [
     "#FEE8C8",  # neph_bin5
 ]
 
+PM_COLORS = [
+    "#00165e",  # PM1 (darker)
+    "#222fdd",  # PM2.5 (lighter)
+]
+
 TOOLS = "pan,box_zoom,box_select,lasso_select,wheel_zoom,crosshair,reset,save"
 OUTPUT_SUBDIR = "quantaq_5hz_timeseries"
 FIGURE_WIDTH = 1800
@@ -182,6 +187,76 @@ def get_sensor_5hz_path(config_key):
     if raw is None:
         raise KeyError(f"No 'path_5hz' key for instrument '{config_key}' in data_config.json.")
     return Path(raw)
+
+
+# Added functions to handle 1‑minute QA/QC data (path) and load PM1/PM2.5
+
+
+def get_sensor_1min_path(config_key):
+    """Return the regular (1‑min) data directory for an instrument key.
+
+    Parameters:
+        config_key (str): Key under 'instruments' in data_config.json.
+
+    Returns:
+        Path: Resolved path to the directory containing 1‑min CSV files.
+    """
+    instr = resolver.config.get("instruments", {}).get(config_key, {})
+    raw = instr.get("path")
+    if raw is None:
+        raise KeyError(f"No 'path' key for instrument '{config_key}' in data_config.json.")
+    return Path(raw)
+
+
+def load_1min_data(sensor_path, file_pattern, burn_date):
+    """Load the 1‑minute CSV files for a given burn date.
+
+    The files follow the pattern defined in ``data_config.json`` (e.g.
+    ``MOD-PM-00194*.csv``). We locate files for the requested date, concatenate
+    them, and return a DataFrame.
+    """
+    # Build a glob pattern that may include the date (YYYYMMDD). If none match,
+    # fall back to the generic pattern.
+    date_str = pd.to_datetime(burn_date).strftime("%Y%m%d")
+    specific_pat = sensor_path / f"*{date_str}*.csv"
+    files = list(specific_pat.parent.glob(specific_pat.name))
+    if not files:
+        files = list(sensor_path.glob(file_pattern))
+    if not files:
+        print(f"    [SKIP] No 1‑min files for {burn_date.date()} in {sensor_path}")
+        return pd.DataFrame()
+    dfs = []
+    for fp in sorted(files):
+        try:
+            df = pd.read_csv(fp, low_memory=False)
+            dfs.append(df)
+        except Exception as exc:
+            print(f"    [ERROR] {fp.name}: {str(exc)[:100]}")
+    if not dfs:
+        return pd.DataFrame()
+    return pd.concat(dfs, ignore_index=True)
+
+
+def prepare_pm_data(df_raw, time_shift_min, garage_time):
+    """Prepare 1‑minute PM data for plotting.
+
+    Mirrors ``prepare_sensor_data`` but retains only ``pm1`` and ``pm25`` columns.
+    """
+    if df_raw.empty:
+        return pd.DataFrame()
+    df = df_raw.copy()
+    # Expect ISO timestamp column similar to 5 Hz data.
+    ts_col = "timestamp_iso" if "timestamp_iso" in df.columns else "timestamp"
+    df["timestamp"] = pd.to_datetime(
+        df[ts_col].astype(str).str.replace("T", " ").str.replace("Z", ""),
+        errors="coerce",
+    ).dt.tz_localize(None) + pd.Timedelta(hours=UTC_OFFSET_HRS)
+    if time_shift_min != 0:
+        df["timestamp"] += pd.Timedelta(minutes=time_shift_min)
+    df["t_hrs"] = (df["timestamp"] - garage_time).dt.total_seconds() / 3600
+    # Keep rows within the plot window.
+    in_window = (df["t_hrs"] >= PLOT_WINDOW[0]) & (df["t_hrs"] <= PLOT_WINDOW[1])
+    return df.loc[in_window].copy()
 
 
 def load_5hz_data(sensor_path, burn_date):
@@ -364,7 +439,7 @@ def add_flag_bands(p, flag_spans):
                         line_color=color,
                         line_alpha=alpha,
                         line_width=2,
-                        level='underlay',
+                        level="underlay",
                     )
                 )
             else:
@@ -375,7 +450,7 @@ def add_flag_bands(p, flag_spans):
                         fill_color=color,
                         fill_alpha=alpha,
                         line_color=None,
-                        level='underlay',
+                        level="underlay",
                     )
                 )
 
@@ -410,20 +485,28 @@ def add_event_lines(p, cr_box_hrs):
         )
 
 
-def add_sensor_markers(p, df, sensor):
-    """Plot OPC and neph bin scatter markers for one sensor panel.
+def add_sensor_markers(p, df, sensor, pm_df: pd.DataFrame | None = None):
+    """Plot OPC, neph, and optional PM1/PM2.5 markers.
+
+    If ``pm_df`` is provided, it should contain ``pm1`` and ``pm25`` columns
+    along with a ``timestamp`` column. PM data are plotted on the primary left y‑axis.
+    """
+    # Existing OPC and neph markers (OPC will use secondary axis "opc")
+
+    """Plot OPC, neph bin, and PM scatter markers for one sensor panel.
 
     Each channel gets its own ColumnDataSource so the HoverTool can report
-    channel name, local timestamp, and flag value per point.  Non-selected
-    points automatically dim when box_select or lasso_select is active.
+    channel name, local timestamp, and flag value per point.
 
-    OPC bins (bin0–bin6): green markers (solid circle, no border)
-    Neph bins (neph_bin0–5): red markers (solid circle, no border)
+    OPC bins (bin0–bin6): green markers on secondary "opc" axis.
+    Neph bins (neph_bin0–5): red markers on "neph" axis.
+    PM1/PM2.5: red circles on primary left axis.
 
     Parameters:
         p (figure): Bokeh figure for this sensor panel.
         df (pd.DataFrame): Prepared sensor data with 't_hrs' and 'timestamp'.
         sensor (str): 'kitchen' or 'bedroom'.
+        pm_df (pd.DataFrame | None): Optional 1‑min PM data.
 
     Returns:
         list of LegendItem: One item per rendered channel for the panel legend.
@@ -439,6 +522,7 @@ def add_sensor_markers(p, df, sensor):
     )
     items = []
 
+    # OPC markers (use secondary "opc" axis)
     for i, col in enumerate(OPC_BINS):
         if col not in df.columns:
             continue
@@ -460,8 +544,91 @@ def add_sensor_markers(p, df, sensor):
             fill_alpha=MARKER_ALPHA,
             line_color=None,
             size=MARKER_SIZE,
+            y_range_name="opc",
         )
         items.append(LegendItem(label=f"{prefix} OPC {col}", renderers=[r]))
+
+    # Neph markers (right "neph" axis)
+    for i, col in enumerate(NEPH_BINS):
+        if col not in df.columns:
+            continue
+        valid = df[col].notna()
+        source = ColumnDataSource(
+            dict(
+                t_hrs=df.loc[valid, "t_hrs"].values,
+                value=df.loc[valid, col].values,
+                channel=[f"{prefix} neph bin{i}"] * valid.sum(),
+                ts=ts_str[valid.values],
+                flag_val=flag_str[valid.values],
+            )
+        )
+        r = p.circle(
+            x="t_hrs",
+            y="value",
+            source=source,
+            fill_color=NEPH_COLORS[i],
+            fill_alpha=MARKER_ALPHA,
+            line_color=None,
+            size=MARKER_SIZE,
+            y_range_name="neph",
+        )
+        items.append(LegendItem(label=f"{prefix} neph bin{i}", renderers=[r]))
+
+    # PM markers (primary left axis)
+    if pm_df is not None and not pm_df.empty:
+        pm_ts_str = pm_df["timestamp"].dt.strftime("%H:%M:%S").values
+        pm_flag_str = (
+            pd.to_numeric(pm_df.get("flag", pd.Series([0] * len(pm_df))), errors="coerce")
+            .fillna(0)
+            .astype(int)
+            .astype(str)
+            .values
+        )
+        # PM1
+        if "pm1" in pm_df.columns:
+            valid = pm_df["pm1"].notna()
+            source = ColumnDataSource(
+                dict(
+                    t_hrs=pm_df.loc[valid, "t_hrs"].values,
+                    value=pm_df.loc[valid, "pm1"].values,
+                    channel=[f"{prefix} PM1"] * valid.sum(),
+                    ts=pm_ts_str[valid.values],
+                    flag_val=pm_flag_str[valid.values],
+                )
+            )
+            r = p.circle(
+                x="t_hrs",
+                y="value",
+                source=source,
+                fill_color=PM_COLORS[0],
+                fill_alpha=MARKER_ALPHA,
+                line_color=None,
+                size=MARKER_SIZE,
+            )
+            items.append(LegendItem(label=f"{prefix} PM1", renderers=[r]))
+        # PM2.5
+        if "pm25" in pm_df.columns:
+            valid = pm_df["pm25"].notna()
+            source = ColumnDataSource(
+                dict(
+                    t_hrs=pm_df.loc[valid, "t_hrs"].values,
+                    value=pm_df.loc[valid, "pm25"].values,
+                    channel=[f"{prefix} PM2.5"] * valid.sum(),
+                    ts=pm_ts_str[valid.values],
+                    flag_val=pm_flag_str[valid.values],
+                )
+            )
+            r = p.circle(
+                x="t_hrs",
+                y="value",
+                source=source,
+                fill_color=PM_COLORS[1],
+                fill_alpha=MARKER_ALPHA,
+                line_color=None,
+                size=MARKER_SIZE,
+            )
+            items.append(LegendItem(label=f"{prefix} PM2.5", renderers=[r]))
+    return items
 
     for i, col in enumerate(NEPH_BINS):
         if col not in df.columns:
@@ -491,7 +658,12 @@ def add_sensor_markers(p, df, sensor):
     return items
 
 
-def build_sensor_panel(sensor, df, flag_spans, cr_box_hrs, panel_title, x_range=None):
+def build_sensor_panel(sensor, df, flag_spans, cr_box_hrs, panel_title, pm_df=None, x_range=None):
+    """Create a Bokeh panel, adding optional PM data on a secondary y‑axis.
+
+    If ``pm_df`` is provided, a right‑hand y‑axis named ``pm`` is created to
+    display PM1 and PM2.5 (µg/m³) values.
+    """
     """Create a single Bokeh figure panel for one sensor.
 
     Parameters:
@@ -514,22 +686,41 @@ def build_sensor_panel(sensor, df, flag_spans, cr_box_hrs, panel_title, x_range=
     opc_range = compute_axis_range(df, OPC_BINS, pad=1.05, floor=0.1)
     neph_range = compute_axis_range(df, NEPH_BINS, pad=1.05, floor=10.0)
 
+    # Determine primary y-range and label based on presence of PM data
+    if pm_df is not None and not pm_df.empty:
+        pm_range = compute_axis_range(pm_df, ["pm1", "pm25"], pad=1.10, floor=0.1)
+        primary_y_range = pm_range
+        y_axis_label = "PM (µg/m³)"
+    else:
+        primary_y_range = opc_range
+        y_axis_label = "OPC  (p/cm³)"
+
     p = figure(
         title=panel_title,
         x_axis_label="",
-        y_axis_label="OPC  (p/cm³)",
+        y_axis_label=y_axis_label,
         x_range=x_rng,
-        y_range=opc_range,
+        y_range=primary_y_range,
         width=FIGURE_WIDTH,
         height=PANEL_HEIGHT,
         tools=TOOLS,
     )
+    # Add extra y-ranges and axes as needed
+    if pm_df is not None and not pm_df.empty:
+        # PM range already assigned to primary; add OPC as secondary on the right
+        p.extra_y_ranges["opc"] = opc_range
+        opc_axis = LinearAxis(y_range_name="opc", axis_label="OPC  (p/cm³)")
+        opc_axis.axis_label_text_font_size = "10pt"
+        p.add_layout(opc_axis, "right")
+    else:
+        # No PM data, OPC stays as primary y-axis; no extra axis needed
+        pass
     p.title.text_font_size = "11pt"
     p.yaxis.axis_label_text_font_size = "10pt"
     p.grid.grid_line_alpha = 0.3
 
-    # Secondary y-axis (right) for neph bins — scaled independently from OPC
-    p.extra_y_ranges = {"neph": neph_range}
+    # Secondary y-axis (right) for neph bins — scaled independently from OPC/PM
+    p.extra_y_ranges["neph"] = neph_range
     neph_axis = LinearAxis(
         y_range_name="neph",
         axis_label="Neph  (p/cm³)",
@@ -547,7 +738,7 @@ def build_sensor_panel(sensor, df, flag_spans, cr_box_hrs, panel_title, x_range=
 
     # Scatter markers and legend
     if not df.empty:
-        legend_items = add_sensor_markers(p, df, sensor)
+        legend_items = add_sensor_markers(p, df, sensor, pm_df=pm_df)
         if legend_items:
             legend = Legend(
                 items=legend_items,
@@ -586,7 +777,9 @@ def build_flag_key_html(all_spans):
     return "".join(parts)
 
 
-def create_burn_figure(burn_id, data_by_sensor, timing, flag_spans_by_sensor, flag_meta_str):
+def create_burn_figure(
+    burn_id, data_by_sensor, pm_data_by_sensor, timing, flag_spans_by_sensor, flag_meta_str
+):
     """Assemble the full Bokeh column layout for one burn: two stacked sensor
     panels with a linked x-axis, plus a metadata/flag-key footer.
 
@@ -619,6 +812,7 @@ def create_burn_figure(burn_id, data_by_sensor, timing, flag_spans_by_sensor, fl
         flag_spans=flag_spans_by_sensor["kitchen"],
         cr_box_hrs=cr_hrs,
         panel_title=_subtitle("kitchen"),
+        pm_df=pm_data_by_sensor.get("kitchen"),
     )
     p_kitchen.xaxis.axis_label = ""
 
@@ -629,6 +823,7 @@ def create_burn_figure(burn_id, data_by_sensor, timing, flag_spans_by_sensor, fl
         flag_spans=flag_spans_by_sensor["bedroom"],
         cr_box_hrs=cr_hrs,
         panel_title=_subtitle("bedroom"),
+        pm_df=pm_data_by_sensor.get("bedroom"),
         x_range=p_kitchen.x_range,
     )
     p_bedroom.xaxis.axis_label = "Time Since Garage Closed (hours)"
@@ -698,6 +893,12 @@ def get_burn_timing(burn_log, burn_id):
 
 
 def main():
+    """Load both 5 Hz and 1‑min QA/QC data, then plot PM1/PM2.5 on the left axis.
+
+    The 1‑min data are loaded from the regular ``path`` directory defined in
+    ``data_config.json``. They are prepared with ``prepare_pm_data`` and passed to
+    the panel builder as ``pm_df``.
+    """
     """Load 5 Hz data, build per-burn two-panel Bokeh figures, save HTML."""
     print("\n" + "=" * 70)
     print("QuantAQ MODULAIR-PM 5 Hz Time Series  —  Burns 4–10")
@@ -725,6 +926,7 @@ def main():
             continue
 
         data_by_sensor = {}
+        pm_data_by_sensor: dict[str, pd.DataFrame] = {}
         flag_spans_by_sensor = {}
         flag_meta_parts = []
 
@@ -738,6 +940,23 @@ def main():
             df_raw = load_5hz_data(path, timing["burn_date"])
             df = prepare_sensor_data(df_raw, cfg["time_shift_min"], timing["garage_time"])
             data_by_sensor[sensor] = df
+
+            # Load 1‑min QA/QC data
+            try:
+                min_path = get_sensor_1min_path(cfg["config_key"])
+                # Retrieve the file pattern for 1‑min CSVs from data_config.json
+                file_pat = (
+                    resolver.config.get("instruments", {})
+                    .get(cfg["config_key"], {})
+                    .get("file_pattern")
+                )
+                pm_raw = load_1min_data(min_path, file_pat, timing["burn_date"])
+                pm_df = prepare_pm_data(pm_raw, cfg["time_shift_min"], timing["garage_time"])
+                pm_data_by_sensor[sensor] = pm_df
+                print(f"    {cfg['display_label']}: {len(pm_df):,} 1‑min PM rows")
+            except Exception as exc:
+                print(f"    [WARNING] 1‑min data not loaded for {cfg['display_label']}: {exc}")
+                pm_data_by_sensor[sensor] = pd.DataFrame()
 
             spans = extract_flag_spans(df) if not df.empty else {}
             flag_spans_by_sensor[sensor] = spans
@@ -754,7 +973,7 @@ def main():
         flag_meta_str = "  |  ".join(flag_meta_parts) if flag_meta_parts else "No flag data"
 
         layout = create_burn_figure(
-            burn_id, data_by_sensor, timing, flag_spans_by_sensor, flag_meta_str
+            burn_id, data_by_sensor, pm_data_by_sensor, timing, flag_spans_by_sensor, flag_meta_str
         )
 
         out_path = output_dir / f"quantaq_5hz_{burn_id}.html"

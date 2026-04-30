@@ -62,7 +62,7 @@ COINCIDENCE_THRESHOLD_CM3 = 1.4e5  # particles/cm3
 
 # Reversal detection parameters
 REVERSAL_FRAC    = 0.5   # n_min < REVERSAL_FRAC * n_peak -> reversal present
-REVERSAL_WIN_MIN = 15    # search window after n_peak (minutes)
+REVERSAL_WIN_MIN = 30    # search window after n_peak (minutes)
 
 # Counts-conservation tolerance (fraction change allowed)
 CONSERVATION_TOL = 0.30
@@ -454,17 +454,13 @@ def _analyze_bin(
     if mask.sum() < 5:
         return blank
 
-    s  = series[mask].values.astype(float)
+    s  = np.asarray(series[mask], dtype=float)
     ts = timestamps[mask].values  # numpy datetime64
 
-    # Smooth with 5-min centred rolling mean for robust peak detection
-    s_smooth = (
-        pd.Series(s)
-        .rolling(window=5, center=True, min_periods=2)
-        .mean()
-        .values
-    )
-    peak_i = int(np.nanargmax(s_smooth))
+    # Use the raw maximum as the coincidence peak. The initial spike is the
+    # true maximum; a centred rolling mean would find the later sustained
+    # plateau instead, placing t_peak after the reversal has already occurred.
+    peak_i = int(np.nanargmax(s))
     n_peak = float(s[peak_i])
     t_peak = pd.Timestamp(ts[peak_i])
 
@@ -475,34 +471,76 @@ def _analyze_bin(
     result["n_peak"] = n_peak
     result["t_peak"] = t_peak
 
-    # Search for minimum within REVERSAL_WIN_MIN after t_peak
-    t_search = t_peak + pd.Timedelta(minutes=REVERSAL_WIN_MIN)
+    # Two-pronged reversal detection:
+    #
+    # Check A (pre-peak): The AeroTrak saturates at very high particle
+    # concentration — Ch1 drops to near zero while smoke is densest, then
+    # recovers as concentration falls back into the instrument's working range.
+    # That recovery plateau becomes the global max, so the reversal dip sits
+    # BEFORE t_peak.  Detect by looking for a V-shape in [ignition, t_peak]:
+    # a significant rise followed by a deep drop.
+    #
+    # Check B (post-peak): Fallback for burns where the initial spike IS the
+    # global max and the dip follows immediately after.
+
+    # --- Check A: pre-peak V-shape ---
+    reversal_pre = False
+    n_min_pre    = np.nan
+    t_min_pre    = pd.NaT
+    if peak_i > 1:
+        s_before  = s[:peak_i]
+        ts_before = ts[:peak_i]
+        thresh    = REVERSAL_FRAC * n_peak
+        # Only search for the dip AFTER the signal has risen above thresh.
+        # Without this, the pre-smoke baseline (~0 #/cm³) would always be
+        # identified as the minimum, and n_pre_dip would be ~0, causing
+        # condition 2 in the original approach to always fail.
+        above = np.where(s_before >= thresh)[0]
+        if len(above) > 0:
+            first_above  = above[0]
+            s_post_rise  = s_before[first_above:]
+            ts_post_rise = ts_before[first_above:]
+            dip_i_local  = int(np.nanargmin(s_post_rise))
+            n_dip        = float(s_post_rise[dip_i_local])
+            if n_dip < thresh:
+                reversal_pre = True
+                n_min_pre    = n_dip
+                t_min_pre    = pd.Timestamp(ts_post_rise[dip_i_local])
+
+    # --- Check B: post-peak drop (original logic) ---
+    reversal_post = False
+    n_min_post    = np.nan
+    t_min_post    = pd.NaT
+    t_search   = t_peak + pd.Timedelta(minutes=REVERSAL_WIN_MIN)
     after_peak = (ts > np.datetime64(t_peak)) & (ts <= np.datetime64(t_search))
+    if after_peak.sum() > 0:
+        s_after    = s[after_peak]
+        ts_after   = ts[after_peak]
+        min_i      = int(np.argmin(s_after))
+        n_min_post = float(s_after[min_i])
+        t_min_post = pd.Timestamp(ts_after[min_i])
+        if n_min_post < REVERSAL_FRAC * n_peak:
+            reversal_post = True
 
-    if after_peak.sum() == 0:
-        return result
+    # Combine: prefer pre-peak result when both fire (deeper dip scenario)
+    if reversal_pre or reversal_post:
+        result["reversal_present"] = True
+        n_min = n_min_pre if reversal_pre else n_min_post
+        t_min = t_min_pre if reversal_pre else t_min_post
+        assert isinstance(t_min, pd.Timestamp)  # always True inside this block
+        result["n_min_during_reversal"] = n_min
+        result["t_min"]                 = t_min  # type: ignore[assignment]
 
-    s_after  = s[after_peak]
-    ts_after = ts[after_peak]
-    min_i    = int(np.argmin(s_after))
-    n_min    = float(s_after[min_i])
-    t_min    = pd.Timestamp(ts_after[min_i])
-
-    result["n_min_during_reversal"] = n_min
-    result["t_min"]                 = t_min
-    result["reversal_present"]      = bool(n_min < REVERSAL_FRAC * n_peak)
-
-    # Reversal duration: t_peak -> first recovery to n_peak / 2
-    if result["reversal_present"]:
-        thresh = n_peak / 2.0
-        post_min = ts > np.datetime64(t_min)
-        s_rec  = s[post_min]
-        ts_rec = ts[post_min]
+        # Duration: from t_min (bottom of dip) to first recovery to n_peak / 2
+        thresh    = n_peak / 2.0
+        post_lo   = ts > np.datetime64(t_min)  # type: ignore[operator]
+        s_rec     = s[post_lo]
+        ts_rec    = ts[post_lo]
         recovered = s_rec >= thresh
         if recovered.any():
-            t_rec = pd.Timestamp(ts_rec[np.argmax(recovered)])
+            t_rec = pd.Timestamp(ts_rec[int(np.argmax(recovered))])
             result["reversal_duration_minutes"] = (
-                (t_rec - t_peak).total_seconds() / 60.0
+                (t_rec - t_min).total_seconds() / 60.0
             )
 
     return result

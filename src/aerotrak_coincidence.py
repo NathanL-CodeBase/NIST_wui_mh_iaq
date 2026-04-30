@@ -860,7 +860,7 @@ def _bokeh_individual(result: dict) -> None:
         p.xaxis.axis_label = "Time"
         p.yaxis.axis_label = "#/cm³"
         p.legend.click_policy = "hide"
-        p.legend.location = "upper right"
+        p.legend.location = "top_right"
         panels.append(p)
 
     if not panels:

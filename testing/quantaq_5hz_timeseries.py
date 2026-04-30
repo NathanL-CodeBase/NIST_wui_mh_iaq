@@ -81,11 +81,13 @@ warnings.filterwarnings("ignore")
 
 from typing import TypedDict
 
+
 class SensorConfig(TypedDict):
     config_key: str
     time_shift_min: float
     display_label: str
     legend_prefix: str
+
 
 _REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
@@ -103,7 +105,7 @@ BURNS = [f"bu: dict[str, SensorConfig]rn{i}" for i in range(4, 11)]
 OPC_BINS = [f"bin{i}" for i in range(7)]  # bin0–bin6
 NEPH_BINS = [f"neph_bin{i}" for i in range(6)]  # neph_bin0–neph_bin5
 
-PLOT_WINDOW = (-1.0, 2.0)  # hours relative to garage-closed time
+PLOT_WINDOW = (-1.0, 3.0)  # hours relative to garage-closed time
 UTC_OFFSET_HRS = -4  # sensor timestamps are UTC; experiments were EDT (UTC-4)
 
 SENSOR_CONFIG = {

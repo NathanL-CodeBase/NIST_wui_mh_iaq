@@ -100,7 +100,7 @@ from src.data_paths import get_common_file, resolver
 # CONSTANTS AND CONFIGURATION
 # ============================================================================
 
-BURNS = [f"bu: dict[str, SensorConfig]rn{i}" for i in range(4, 11)]
+BURNS = [f"burn{i}" for i in range(4, 11)]
 
 OPC_BINS = [f"bin{i}" for i in range(7)]  # bin0–bin6
 NEPH_BINS = [f"neph_bin{i}" for i in range(6)]  # neph_bin0–neph_bin5
@@ -127,7 +127,7 @@ SENSOR_CONFIG = {
 # Compound flags (e.g., flag=6 = OPC Fault + Neph Fault) are decoded bit-by-bit.
 FLAG_DEFS = {
     1: ("Startup", "#FFD700", 0.20),
-    2: ("OPC Fault", "#FF4444", 0.25),
+    2: ("OPC Fault", "#F80F0F", 0.25),
     4: ("Neph Fault", "#FF8C00", 0.25),
     8: ("RH/T Fault", "#4169E1", 0.20),
     4096: ("OPC Overheat", "#9400D3", 0.25),
@@ -157,8 +157,8 @@ NEPH_COLORS = [
 
 TOOLS = "pan,box_zoom,box_select,lasso_select,wheel_zoom,crosshair,reset,save"
 OUTPUT_SUBDIR = "quantaq_5hz_timeseries"
-FIGURE_WIDTH = 1200
-PANEL_HEIGHT = 460
+FIGURE_WIDTH = 1800
+PANEL_HEIGHT = 600
 MARKER_SIZE = 3
 MARKER_ALPHA = 0.55
 
@@ -343,24 +343,41 @@ def add_hover_tool(p):
 
 
 def add_flag_bands(p, flag_spans):
-    """Add semi-transparent BoxAnnotations behind data for each active flag bit.
+    """Add semi-transparent BoxAnnotations (or vertical spans) behind data for each active flag bit.
 
     Parameters:
         p (figure): Bokeh figure.
         flag_spans (dict): Output of extract_flag_spans() for this sensor.
     """
+    # Tolerance in hours for considering a span as a single point.
+    # 5 Hz data => 0.2 s ≈ 5.55e-05 h, so use a small epsilon.
+    epsilon = 5e-05  # hours (~0.18 s)
     for bit, spans in flag_spans.items():
         _, color, alpha = FLAG_DEFS[bit]
         for t_start, t_end in spans:
-            p.add_layout(
-                BoxAnnotation(
-                    left=t_start,
-                    right=t_end,
-                    fill_color=color,
-                    fill_alpha=alpha,
-                    line_color=None,
+            # Use a vertical Span for zero‑length or near‑zero intervals.
+            if abs(t_end - t_start) <= epsilon:
+                p.add_layout(
+                    Span(
+                        location=t_start,
+                        dimension="height",
+                        line_color=color,
+                        line_alpha=alpha,
+                        line_width=2,
+                        level='underlay',
+                    )
                 )
-            )
+            else:
+                p.add_layout(
+                    BoxAnnotation(
+                        left=t_start,
+                        right=t_end,
+                        fill_color=color,
+                        fill_alpha=alpha,
+                        line_color=None,
+                        level='underlay',
+                    )
+                )
 
 
 def add_event_lines(p, cr_box_hrs):
@@ -454,7 +471,7 @@ def add_sensor_markers(p, df, sensor):
             dict(
                 t_hrs=df.loc[valid, "t_hrs"].values,
                 value=df.loc[valid, col].values,
-                channel=[f"{prefix} neph b{i}"] * valid.sum(),
+                channel=[f"{prefix} neph bin{i}"] * valid.sum(),
                 ts=ts_str[valid.values],
                 flag_val=flag_str[valid.values],
             )
@@ -469,7 +486,7 @@ def add_sensor_markers(p, df, sensor):
             size=MARKER_SIZE,
             y_range_name="neph",
         )
-        items.append(LegendItem(label=f"{prefix} neph b{i}", renderers=[r]))
+        items.append(LegendItem(label=f"{prefix} neph bin{i}", renderers=[r]))
 
     return items
 
@@ -627,10 +644,9 @@ def create_burn_figure(burn_id, data_by_sensor, timing, flag_spans_by_sensor, fl
             f"{script_meta}<br>"
             f"{flag_meta_str}"
             f"</div>"
-        ),
-        width=FIGURE_WIDTH,
+        )
     )
-
+    footer.width = FIGURE_WIDTH
     return column(p_kitchen, p_bedroom, footer)
 
 

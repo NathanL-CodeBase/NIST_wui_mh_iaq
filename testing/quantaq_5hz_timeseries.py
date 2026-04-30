@@ -4,7 +4,7 @@
 QuantAQ MODULAIR-PM 5 Hz Time Series by Burn
 =============================================
 
-Generates one interactive Bokeh HTML figure per burn (burns 4–10) from the
+Generates one interactive Bokeh HTML figure per burn (burns 4-10) from the
 5 Hz SD-card data logged by the two QuantAQ MODULAIR-PM sensors deployed in
 the WUI manufactured-home smoke experiments.
 
@@ -13,8 +13,8 @@ with a linked x-axis so zooming or panning one panel simultaneously updates
 the other.
 
 Key Channels Plotted:
-    - OPC bin0–bin6 (p/cm³): shades of green, darkest = smallest particle
-    - neph_bin0–neph_bin5 (p/cm³): shades of red, darkest = smallest particle
+    - OPC bin0-bin6 (p/cm³): shades of green, darkest = smallest particle
+    - neph_bin0-neph_bin5 (p/cm³): shades of red, darkest = smallest particle
     Sensor identity (kitchen vs. bedroom) is indicated by the panel title only.
 
 Data Quality Flags (bitmask in 'flag' column — values can be summed):
@@ -79,6 +79,14 @@ from bokeh.plotting import figure
 
 warnings.filterwarnings("ignore")
 
+from typing import TypedDict
+
+class SensorConfig(TypedDict):
+    config_key: str
+    time_shift_min: float
+    display_label: str
+    legend_prefix: str
+
 _REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
@@ -90,13 +98,13 @@ from src.data_paths import get_common_file, resolver
 # CONSTANTS AND CONFIGURATION
 # ============================================================================
 
-BURNS = [f"burn{i}" for i in range(4, 11)]
+BURNS = [f"bu: dict[str, SensorConfig]rn{i}" for i in range(4, 11)]
 
-OPC_BINS = [f"bin{i}" for i in range(7)]          # bin0–bin6
-NEPH_BINS = [f"neph_bin{i}" for i in range(6)]    # neph_bin0–neph_bin5
+OPC_BINS = [f"bin{i}" for i in range(7)]  # bin0–bin6
+NEPH_BINS = [f"neph_bin{i}" for i in range(6)]  # neph_bin0–neph_bin5
 
-PLOT_WINDOW = (-1.0, 2.0)     # hours relative to garage-closed time
-UTC_OFFSET_HRS = -4           # sensor timestamps are UTC; experiments were EDT (UTC-4)
+PLOT_WINDOW = (-1.0, 2.0)  # hours relative to garage-closed time
+UTC_OFFSET_HRS = -4  # sensor timestamps are UTC; experiments were EDT (UTC-4)
 
 SENSOR_CONFIG = {
     "kitchen": {
@@ -116,12 +124,12 @@ SENSOR_CONFIG = {
 # Flag bitmask: bit_value → (label, fill_color, fill_alpha)
 # Compound flags (e.g., flag=6 = OPC Fault + Neph Fault) are decoded bit-by-bit.
 FLAG_DEFS = {
-    1:    ("Startup",      "#FFD700", 0.20),
-    2:    ("OPC Fault",    "#FF4444", 0.25),
-    4:    ("Neph Fault",   "#FF8C00", 0.25),
-    8:    ("RH/T Fault",   "#4169E1", 0.20),
+    1: ("Startup", "#FFD700", 0.20),
+    2: ("OPC Fault", "#FF4444", 0.25),
+    4: ("Neph Fault", "#FF8C00", 0.25),
+    8: ("RH/T Fault", "#4169E1", 0.20),
     4096: ("OPC Overheat", "#9400D3", 0.25),
-    8192: ("SD Fault",     "#808080", 0.25),
+    8192: ("SD Fault", "#808080", 0.25),
 }
 
 # OPC bins (bin0–bin6): shades of green, dark (small) → light (large)
@@ -157,6 +165,7 @@ MARKER_ALPHA = 0.55
 # DATA LOADING
 # ============================================================================
 
+
 def get_sensor_5hz_path(config_key):
     """Return the path_5hz directory for an instrument key from data_config.json.
 
@@ -169,9 +178,7 @@ def get_sensor_5hz_path(config_key):
     instr = resolver.config.get("instruments", {}).get(config_key, {})
     raw = instr.get("path_5hz")
     if raw is None:
-        raise KeyError(
-            f"No 'path_5hz' key for instrument '{config_key}' in data_config.json."
-        )
+        raise KeyError(f"No 'path_5hz' key for instrument '{config_key}' in data_config.json.")
     return Path(raw)
 
 
@@ -226,13 +233,10 @@ def prepare_sensor_data(df_raw, time_shift_min, garage_time):
     df = df_raw.copy()
 
     # Parse ISO timestamp (UTC) and convert to local EDT
-    df["timestamp"] = (
-        pd.to_datetime(
-            df["timestamp_iso"].str.replace("T", " ").str.replace("Z", ""),
-            errors="coerce",
-        ).dt.tz_localize(None)
-        + pd.Timedelta(hours=UTC_OFFSET_HRS)
-    )
+    df["timestamp"] = pd.to_datetime(
+        df["timestamp_iso"].str.replace("T", " ").str.replace("Z", ""),
+        errors="coerce",
+    ).dt.tz_localize(None) + pd.Timedelta(hours=UTC_OFFSET_HRS)
 
     # Apply per-instrument clock-correction shift
     if time_shift_min != 0:
@@ -248,6 +252,7 @@ def prepare_sensor_data(df_raw, time_shift_min, garage_time):
 # ============================================================================
 # FLAG ANALYSIS
 # ============================================================================
+
 
 def extract_flag_spans(df, t_col="t_hrs", flag_col="flag"):
     """Decode the 'flag' bitmask column into contiguous time spans per flag bit.
@@ -280,9 +285,7 @@ def extract_flag_spans(df, t_col="t_hrs", flag_col="flag"):
         rise = np.where(~padded[:-1] & padded[1:])[0]
         fall = np.where(padded[:-1] & ~padded[1:])[0]
         bit_spans = [
-            (t_vals[s], t_vals[e - 1])
-            for s, e in zip(rise, fall)
-            if s < len(t_vals) and e > 0
+            (t_vals[s], t_vals[e - 1]) for s, e in zip(rise, fall) if s < len(t_vals) and e > 0
         ]
         if bit_spans:
             spans[bit] = bit_spans
@@ -293,6 +296,7 @@ def extract_flag_spans(df, t_col="t_hrs", flag_col="flag"):
 # ============================================================================
 # PLOTTING
 # ============================================================================
+
 
 def compute_axis_range(df, cols, pad=1.05, floor=0.1):
     """Compute a Range1d for a y-axis from the max of specified columns.
@@ -325,11 +329,11 @@ def add_hover_tool(p):
     """
     hover = HoverTool(
         tooltips=[
-            ("Channel",       "@channel"),
+            ("Channel", "@channel"),
             ("Concentration", "@value{0.0000} p/cm³"),
-            ("Time (hrs)",    "@t_hrs{0.000}"),
-            ("Local time",    "@ts"),
-            ("Flag value",    "@flag_val"),
+            ("Time (hrs)", "@t_hrs{0.000}"),
+            ("Local time", "@ts"),
+            ("Flag value", "@flag_val"),
         ],
         point_policy="snap_to_data",
     )
@@ -346,11 +350,15 @@ def add_flag_bands(p, flag_spans):
     for bit, spans in flag_spans.items():
         _, color, alpha = FLAG_DEFS[bit]
         for t_start, t_end in spans:
-            p.add_layout(BoxAnnotation(
-                left=t_start, right=t_end,
-                fill_color=color, fill_alpha=alpha,
-                line_color=None,
-            ))
+            p.add_layout(
+                BoxAnnotation(
+                    left=t_start,
+                    right=t_end,
+                    fill_color=color,
+                    fill_alpha=alpha,
+                    line_color=None,
+                )
+            )
 
 
 def add_event_lines(p, cr_box_hrs):
@@ -362,15 +370,25 @@ def add_event_lines(p, cr_box_hrs):
         cr_box_hrs (float or None): CR Box activation time in hours since
             garage closed.
     """
-    p.add_layout(Span(
-        location=0, dimension="height",
-        line_color="#444444", line_width=2.0, line_dash="solid",
-    ))
+    p.add_layout(
+        Span(
+            location=0,
+            dimension="height",
+            line_color="#444444",
+            line_width=2.0,
+            line_dash="solid",
+        )
+    )
     if cr_box_hrs is not None:
-        p.add_layout(Span(
-            location=cr_box_hrs, dimension="height",
-            line_color="#444444", line_width=2.0, line_dash="dashed",
-        ))
+        p.add_layout(
+            Span(
+                location=cr_box_hrs,
+                dimension="height",
+                line_color="#444444",
+                line_width=2.0,
+                line_dash="dashed",
+            )
+        )
 
 
 def add_sensor_markers(p, df, sensor):
@@ -395,7 +413,10 @@ def add_sensor_markers(p, df, sensor):
     ts_str = df["timestamp"].dt.strftime("%H:%M:%S").values
     flag_str = (
         pd.to_numeric(df.get("flag", pd.Series([0] * len(df))), errors="coerce")
-        .fillna(0).astype(int).astype(str).values
+        .fillna(0)
+        .astype(int)
+        .astype(str)
+        .values
     )
     items = []
 
@@ -403,17 +424,23 @@ def add_sensor_markers(p, df, sensor):
         if col not in df.columns:
             continue
         valid = df[col].notna()
-        source = ColumnDataSource(dict(
-            t_hrs=df.loc[valid, "t_hrs"].values,
-            value=df.loc[valid, col].values,
-            channel=[f"{prefix} OPC {col}"] * valid.sum(),
-            ts=ts_str[valid.values],
-            flag_val=flag_str[valid.values],
-        ))
+        source = ColumnDataSource(
+            dict(
+                t_hrs=df.loc[valid, "t_hrs"].values,
+                value=df.loc[valid, col].values,
+                channel=[f"{prefix} OPC {col}"] * valid.sum(),
+                ts=ts_str[valid.values],
+                flag_val=flag_str[valid.values],
+            )
+        )
         r = p.circle(
-            x="t_hrs", y="value", source=source,
-            fill_color=OPC_COLORS[i], fill_alpha=MARKER_ALPHA,
-            line_color=None, size=MARKER_SIZE,
+            x="t_hrs",
+            y="value",
+            source=source,
+            fill_color=OPC_COLORS[i],
+            fill_alpha=MARKER_ALPHA,
+            line_color=None,
+            size=MARKER_SIZE,
         )
         items.append(LegendItem(label=f"{prefix} OPC {col}", renderers=[r]))
 
@@ -421,17 +448,23 @@ def add_sensor_markers(p, df, sensor):
         if col not in df.columns:
             continue
         valid = df[col].notna()
-        source = ColumnDataSource(dict(
-            t_hrs=df.loc[valid, "t_hrs"].values,
-            value=df.loc[valid, col].values,
-            channel=[f"{prefix} neph b{i}"] * valid.sum(),
-            ts=ts_str[valid.values],
-            flag_val=flag_str[valid.values],
-        ))
+        source = ColumnDataSource(
+            dict(
+                t_hrs=df.loc[valid, "t_hrs"].values,
+                value=df.loc[valid, col].values,
+                channel=[f"{prefix} neph b{i}"] * valid.sum(),
+                ts=ts_str[valid.values],
+                flag_val=flag_str[valid.values],
+            )
+        )
         r = p.circle(
-            x="t_hrs", y="value", source=source,
-            fill_color=NEPH_COLORS[i], fill_alpha=MARKER_ALPHA,
-            line_color=None, size=MARKER_SIZE,
+            x="t_hrs",
+            y="value",
+            source=source,
+            fill_color=NEPH_COLORS[i],
+            fill_alpha=MARKER_ALPHA,
+            line_color=None,
+            size=MARKER_SIZE,
             y_range_name="neph",
         )
         items.append(LegendItem(label=f"{prefix} neph b{i}", renderers=[r]))
@@ -439,8 +472,7 @@ def add_sensor_markers(p, df, sensor):
     return items
 
 
-def build_sensor_panel(sensor, df, flag_spans, cr_box_hrs, panel_title,
-                       x_range=None):
+def build_sensor_panel(sensor, df, flag_spans, cr_box_hrs, panel_title, x_range=None):
     """Create a single Bokeh figure panel for one sensor.
 
     Parameters:
@@ -535,8 +567,7 @@ def build_flag_key_html(all_spans):
     return "".join(parts)
 
 
-def create_burn_figure(burn_id, data_by_sensor, timing, flag_spans_by_sensor,
-                       flag_meta_str):
+def create_burn_figure(burn_id, data_by_sensor, timing, flag_spans_by_sensor, flag_meta_str):
     """Assemble the full Bokeh column layout for one burn: two stacked sensor
     panels with a linked x-axis, plus a metadata/flag-key footer.
 
@@ -555,8 +586,11 @@ def create_burn_figure(burn_id, data_by_sensor, timing, flag_spans_by_sensor,
 
     def _subtitle(sensor):
         label = SENSOR_CONFIG[sensor]["display_label"]
-        note = f"garage closed t=0 (—)  |  CR Box on t={cr_hrs:.3f} h (- -)" \
-               if cr_hrs is not None else "garage closed t=0 (—)"
+        note = (
+            f"garage closed t=0 (—)  |  CR Box on t={cr_hrs:.3f} h (- -)"
+            if cr_hrs is not None
+            else "garage closed t=0 (—)"
+        )
         return f"{burn_id}  —  {label}  ({burn_date_str})  |  {note}"
 
     # Kitchen panel: defines the shared x-range
@@ -602,6 +636,7 @@ def create_burn_figure(burn_id, data_by_sensor, timing, flag_spans_by_sensor,
 # BURN TIMING
 # ============================================================================
 
+
 def get_burn_timing(burn_log, burn_id):
     """Extract garage-closed and CR Box on times from the burn log.
 
@@ -643,6 +678,7 @@ def get_burn_timing(burn_log, burn_id):
 # MAIN
 # ============================================================================
 
+
 def main():
     """Load 5 Hz data, build per-burn two-panel Bokeh figures, save HTML."""
     print("\n" + "=" * 70)
@@ -667,7 +703,7 @@ def main():
 
         timing = get_burn_timing(burn_log, burn_id)
         if timing is None:
-            print(f"  [SKIP] Missing timing in burn log.\n")
+            print("  [SKIP] Missing timing in burn log.\n")
             continue
 
         data_by_sensor = {}
@@ -691,12 +727,10 @@ def main():
             if not df.empty:
                 print(f"    {cfg['display_label']}: {len(df):,} rows in window")
                 if spans:  # only add to footer when this sensor has actual flag events
-                    flag_meta_parts.append(
-                        get_flag_metadata(spans, FLAG_DEFS, sensor)
-                    )
+                    flag_meta_parts.append(get_flag_metadata(spans, FLAG_DEFS, sensor))
 
         if all(df.empty for df in data_by_sensor.values()):
-            print(f"  [SKIP] No data in burn window.\n")
+            print("  [SKIP] No data in burn window.\n")
             continue
 
         flag_meta_str = "  |  ".join(flag_meta_parts) if flag_meta_parts else "No flag data"

@@ -165,7 +165,7 @@ OUTPUT_SUBDIR = "quantaq_5hz_timeseries"
 FIGURE_WIDTH = 1800
 PANEL_HEIGHT = 600
 MARKER_SIZE = 3
-MARKER_ALPHA = 0.55
+MARKER_ALPHA = 0.60
 
 
 # ============================================================================

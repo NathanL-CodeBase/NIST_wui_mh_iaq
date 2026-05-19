@@ -367,7 +367,8 @@ If you use this software, please cite it as:
   title        = {Manufactured Housing Wildland-Urban Interface (WUI) Fire Smoke Study: Indoor Air Quality Analysis Tools},
   year         = {2025},
   publisher    = {National Institute of Standards and Technology},
-  url          = {https://github.com/usnistgov/WUI_MH_IAQ}
+  url          = {https://github.com/usnistgov/WUI_MH_IAQ},
+  doi          = {https://doi.org/10.18434/mds2-4025}
 }
 ```
 

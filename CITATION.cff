@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "Manufactured Housing Wildland-Urban Interface (WUI) Fire Smoke Study: Indoor Air Quality Analysis Tools"
+authors:
+  - family-names: Lima
+    given-names: Nathan M.
+    orcid: "https://orcid.org/0009-0004-6252-4368"
+  - family-names: Poppendieck
+    given-names: Dustin G.
+    orcid: "https://orcid.org/0000-0002-1100-511X"
+year: 2025
+doi: 10.18434/mds2-4025
+url: "https://github.com/usnistgov/WUI_MH_IAQ"
+repository-code: "https://github.com/usnistgov/WUI_MH_IAQ"
+license: NIST-PD

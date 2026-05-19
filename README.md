@@ -362,25 +362,28 @@ The experimental data associated with this project are not included in this repo
 If you use this software, please cite it as:
 
 ```bibtex
-@software{nist_wui_mh_iaq,
+@software{lima_wui_mh_iaq_2025,
   author       = {Lima, Nathan M. and Poppendieck, Dustin G.},
-  title        = {Manufactured Housing Wildland-Urban Interface (WUI) Fire Smoke Study: Indoor Air Quality Analysis Tools},
+  title        = {Manufactured Housing Wildland-Urban Interface ({WUI}) Fire Smoke Study: Indoor Air Quality Analysis Tools},
   year         = {2025},
   publisher    = {National Institute of Standards and Technology},
+  doi          = {10.18434/mds2-4025},
   url          = {https://github.com/usnistgov/WUI_MH_IAQ}
 }
 ```
 
-**Related Publications:**
-- Publication under review. Citation will be updated upon journal acceptance.
+### Related Publications
+
+Two journal articles based on this dataset are currently in progress. Citations will be added here upon acceptance.
 
 ## Contact
 
-- **PI:** Dustin G. Poppendieck
-- **NIST Organizational Unit:** Engineering Laboratory
-- **Division:** Building Energy & Environment Division
-- **Group:** Indoor Air Quality and Ventilation Group
-- **Email:** dustin.poppendieck@nist.gov
+- **PI:** [Dustin G. Poppendieck](https://www.nist.gov/people/dustin-poppendieck)
+- **Researcher / Code Developer:** [Nathan M. Lima](https://www.nist.gov/people/dr-nathan-lima)
+- **NIST Organizational Unit:** [Engineering Laboratory](https://www.nist.gov/el)
+- **Division:** [Building Energy and Environment Division](https://www.nist.gov/el/beed)
+- **Group:** [Indoor Air Quality and Ventilation Group](https://www.nist.gov/el/beed/indoor-air-quality-ventilation)
+- **Email:** nathan.lima@nist.gov
 
 ## Acknowledgments
 

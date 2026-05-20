@@ -2,15 +2,26 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 type: software
 title: "Manufactured Housing Wildland-Urban Interface (WUI) Fire Smoke Study: Indoor Air Quality Analysis Tools"
+version: "1.0.0"
+date-released: "2026-05-20"
 authors:
   - family-names: Lima
     given-names: Nathan M.
     orcid: "https://orcid.org/0009-0004-6252-4368"
+    affiliation: "National Institute of Standards and Technology"
   - family-names: Poppendieck
     given-names: Dustin G.
     orcid: "https://orcid.org/0000-0002-1100-511X"
-year: 2025
-doi: 10.18434/mds2-4025
-url: "https://github.com/usnistgov/WUI_MH_IAQ"
+    affiliation: "National Institute of Standards and Technology"
+doi: "10.18434/mds2-4025"
+url: "https://data.nist.gov/od/id/mds2-4025"
 repository-code: "https://github.com/usnistgov/WUI_MH_IAQ"
 license: NIST-PD
+abstract: "This repository contains Python analysis scripts for evaluating indoor air quality during simulated wildland urban interface (WUI) fire smoke infiltration events in the NIST IAQ test house."
+keywords:
+  - wildland-urban interface
+  - WUI fire
+  - smoke infiltration
+  - indoor air quality
+  - manufactured housing
+  - NIST

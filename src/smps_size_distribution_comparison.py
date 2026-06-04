@@ -19,7 +19,6 @@ import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Paths
 # ──────────────────────────────────────────────────────────────────────────────
@@ -31,12 +30,12 @@ if not config_path.exists():
 with open(config_path) as f:
     cfg = json.load(f)
 
-smps_dir   = Path(cfg["instruments"]["smps"]["path"])
-kcl_path   = Path(cfg["common_folders"]["kcl_cadr_smps"])
+smps_dir = Path(cfg["instruments"]["smps"]["path"])
+kcl_path = Path(cfg["common_folders"]["kcl_cadr_smps"])
 output_dir = Path(cfg["common_folders"]["output_figures"])
 output_dir.mkdir(parents=True, exist_ok=True)
 
-xlsx_path  = smps_dir / "MH_apollo_bed_04262024_numConc.xlsx"
+xlsx_path = smps_dir / "MH_apollo_bed_04262024_numConc.xlsx"
 
 for p in (xlsx_path, kcl_path):
     if not p.exists():
@@ -48,19 +47,20 @@ for p in (xlsx_path, kcl_path):
 # ──────────────────────────────────────────────────────────────────────────────
 
 TEXT_CONFIG = {
-    "font_size":            12,
-    "title_font_size":      12,
+    "font_size": 12,
+    "title_font_size": 12,
     "axis_label_font_size": 12,
-    "axis_tick_font_size":  12,
-    "legend_font_size":     12,
-    "plot_font_style":      "bold",   # axis labels
-    "font_style":           "normal", # ticks, legend
+    "axis_tick_font_size": 12,
+    "legend_font_size": 12,
+    "plot_font_style": "bold",  # axis labels
+    "font_style": "normal",  # ticks, legend
 }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Parsers
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def parse_tsi_txt(filepath):
     """Parse a TSI SMPS text export (tab-delimited, Concentration DW / Number).
@@ -87,20 +87,18 @@ def parse_tsi_txt(filepath):
     n_scans = len(scan_nums)
 
     # Locate the row AFTER "Diameter Midpoint" -- that is where data begins
-    diam_header_idx = next(
-        i for i, ln in enumerate(lines) if ln.startswith("Diameter Midpoint")
-    )
+    diam_header_idx = next(i for i, ln in enumerate(lines) if ln.startswith("Diameter Midpoint"))
 
     # Read size-bin rows until the first column is no longer a float
     diameters, rows = [], []
-    for ln in lines[diam_header_idx + 1:]:
+    for ln in lines[diam_header_idx + 1 :]:
         parts = ln.rstrip("\n").split("\t")
         try:
             d = float(parts[0])
         except (ValueError, IndexError):
             break
         vals = []
-        for v in parts[1: n_scans + 1]:
+        for v in parts[1 : n_scans + 1]:
             try:
                 vals.append(float(v))
             except ValueError:
@@ -113,14 +111,10 @@ def parse_tsi_txt(filepath):
     data = pd.DataFrame(rows, index=diameters, columns=scan_nums, dtype=float)
 
     # Total concentration from footer (used only for peak-scan selection)
-    total_conc_line = next(
-        (ln for ln in lines if ln.startswith("Total Concentration")), None
-    )
+    total_conc_line = next((ln for ln in lines if ln.startswith("Total Concentration")), None)
     if total_conc_line:
         parts = total_conc_line.strip().split("\t")[1:]
-        total_conc = np.array(
-            [float(v) if v.strip() else 0.0 for v in parts[:n_scans]]
-        )
+        total_conc = np.array([float(v) if v.strip() else 0.0 for v in parts[:n_scans]])
     else:
         total_conc = data.sum(axis=0).values
 
@@ -148,17 +142,11 @@ def parse_wui_xlsx(filepath):
     df.columns = [c.strip() if isinstance(c, str) else c for c in df.columns]
 
     # Total-concentration column (contains "Total" and "Conc")
-    total_col = next(
-        c for c in df.columns
-        if isinstance(c, str) and "Total" in c and "Conc" in c
-    )
+    total_col = next(c for c in df.columns if isinstance(c, str) and "Total" in c and "Conc" in c)
     total_conc = pd.to_numeric(df[total_col], errors="coerce").fillna(0.0).values
 
     # Size-bin columns: column name is a positive float (the diameter midpoint)
-    bin_cols = [
-        c for c in df.columns
-        if not isinstance(c, str) and float(c) > 0
-    ]
+    bin_cols = [c for c in df.columns if not isinstance(c, str) and float(c) > 0]
     diameters = np.array([float(c) for c in bin_cols])
     data = df[bin_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
 
@@ -168,6 +156,7 @@ def parse_wui_xlsx(filepath):
 # ──────────────────────────────────────────────────────────────────────────────
 # Statistics helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def peak_normalize(dist):
     """Normalize to unit peak.
@@ -216,8 +205,8 @@ def compute_gmd_gsd(diameters, dndlogdp):
 # ──────────────────────────────────────────────────────────────────────────────
 
 d_wui, df_wui, tc_wui = parse_wui_xlsx(xlsx_path)
-peak_idx_wui  = int(np.argmax(tc_wui))
-dist_wui_raw  = df_wui.iloc[peak_idx_wui].values.astype(float)
+peak_idx_wui = int(np.argmax(tc_wui))
+dist_wui_raw = df_wui.iloc[peak_idx_wui].values.astype(float)
 gmd_wui, gsd_wui = compute_gmd_gsd(d_wui, dist_wui_raw)
 dist_wui = peak_normalize(dist_wui_raw)
 
@@ -228,25 +217,36 @@ print(f"  GMD             : {gmd_wui:.1f} nm")
 print(f"  GSD             : {gsd_wui:.3f}")
 
 d_kcl, df_kcl, tc_kcl = parse_tsi_txt(kcl_path)
+# Ensure we have a numpy array for thresholding
+tc_kcl = np.asarray(tc_kcl)
 
 # The file contains two KCl injection cycles (generator on → peak → natural decay).
-# We want the first cycle.  Strategy: find the first contiguous block of scans
-# above a high-concentration threshold, then take the peak within that block.
-# This is robust even if the second cycle's peak slightly exceeds the first.
+# We want the second cycle.  Strategy: find all contiguous blocks of scans
+# above a high-concentration threshold, then take the peak within the second block.
 _KCL_EVENT_THRESHOLD = 1000.0  # #/cm³ -- well above background, well below event peak
-_first_on  = next(i for i in range(len(tc_kcl)) if tc_kcl[i] >= _KCL_EVENT_THRESHOLD)
-_first_peak = int(np.argmax(tc_kcl[_first_on:])) + _first_on
-_first_off  = next(
-    (i for i in range(_first_peak, len(tc_kcl)) if tc_kcl[i] < _KCL_EVENT_THRESHOLD),
-    len(tc_kcl),
-)
-peak_idx_kcl  = int(np.argmax(tc_kcl[_first_on:_first_off])) + _first_on
-dist_kcl_raw  = df_kcl.iloc[:, peak_idx_kcl].values.astype(float)
+# Find indices where concentration exceeds threshold
+above = tc_kcl >= _KCL_EVENT_THRESHOLD
+# Label contiguous blocks
+block_ids = np.diff(above.astype(int), prepend=0)
+block_starts = np.where(block_ids == 1)[0]
+block_ends = np.where(block_ids == -1)[0] - 1
+# If the signal ends while still above threshold, adjust last block
+if above[-1]:
+    block_ends = np.append(block_ends, len(tc_kcl) - 1)
+# Ensure we have at least two blocks
+if len(block_starts) < 2:
+    sys.exit("Expected at least two KCl events; check data or threshold.")
+# Use the second block (index 1)
+second_start = block_starts[1]
+second_end = block_ends[1]
+# Find peak within second block
+peak_idx_kcl = second_start + int(np.argmax(tc_kcl[second_start : second_end + 1]))
+dist_kcl_raw = df_kcl.iloc[:, peak_idx_kcl].values.astype(float)
 gmd_kcl, gsd_kcl = compute_gmd_gsd(d_kcl, dist_kcl_raw)
 dist_kcl = peak_normalize(dist_kcl_raw)
 
-print("\nKCl (Link et al. 2024)")
-print(f"  First event     : scans {df_kcl.columns[_first_on]}–{df_kcl.columns[_first_off - 1]}")
+print("\nKCl (Link et al. 2024) - second event")
+print(f"  Second event    : scans {df_kcl.columns[second_start]}–{df_kcl.columns[second_end]}")
 print(f"  Peak scan number: {df_kcl.columns[peak_idx_kcl]}")
 print(f"  Total conc      : {tc_kcl[peak_idx_kcl]:.1f} #/cm³")
 print(f"  GMD             : {gmd_kcl:.1f} nm")
@@ -262,13 +262,18 @@ TC = TEXT_CONFIG
 fig, ax = plt.subplots(figsize=(6.5, 4.5))
 
 ax.plot(
-    d_wui, dist_wui,
-    color="#D55E00", linewidth=1.8,
+    d_wui,
+    dist_wui,
+    color="#D55E00",
+    linewidth=1.8,
     label="WUI smoke, Burn 01",
 )
 ax.plot(
-    d_kcl, dist_kcl,
-    color="#0072B2", linewidth=1.8, linestyle="--",
+    d_kcl,
+    dist_kcl,
+    color="#0072B2",
+    linewidth=1.8,
+    linestyle="--",
     label="KCl, Link et al. (2024)",
 )
 
@@ -280,9 +285,7 @@ ax.set_ylim(0, 1.08)
 major_ticks = [5, 10, 20, 50, 100, 200, 500]
 ax.set_xticks(major_ticks)
 ax.xaxis.set_major_formatter(ticker.FixedFormatter([str(t) for t in major_ticks]))
-ax.xaxis.set_minor_locator(
-    ticker.LogLocator(base=10.0, subs=np.arange(2, 10), numticks=100)
-)
+ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(2, 10), numticks=100))
 ax.xaxis.set_minor_formatter(ticker.NullFormatter())
 
 ax.set_xlabel(
@@ -310,13 +313,13 @@ for txt in legend.get_texts():
     txt.set_fontweight(TC["font_style"])
 
 ax.grid(True, which="major", linestyle="--", linewidth=0.5, alpha=0.5, color="0.6")
-ax.grid(True, which="minor", linestyle=":",  linewidth=0.3, alpha=0.3, color="0.6")
+ax.grid(True, which="minor", linestyle=":", linewidth=0.3, alpha=0.3, color="0.6")
 
 fig.tight_layout()
 
 out_pdf = output_dir / "SI_smps_size_distribution_comparison.pdf"
 out_png = output_dir / "SI_smps_size_distribution_comparison.png"
 fig.savefig(out_pdf, dpi=300, bbox_inches="tight")
-fig.savefig(out_png, dpi=150, bbox_inches="tight")
+fig.savefig(out_png, dpi=300, bbox_inches="tight")
 print(f"\nFigure saved: {out_pdf}")
 print(f"PNG preview:  {out_png}")

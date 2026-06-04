@@ -1,19 +1,16 @@
-I need to process two SMPS datasets and produce a publication figure comparing their particle size distributions, for a supplemental information section of a paper (submission ea-2026-00137g). Follow the repo conventions in my user preferences (NumPy-style docstrings, header block with purpose/author Nathan Lima/created date/update log, no hardcoded paths, pandas for processing, matplotlib for the static figure using the TEXT_CONFIG pattern: 12pt font, bold titles and axis labels, normal-weight ticks and legend).
-Context: A reviewer asked us to show the PM size distribution of (a) our WUI mixed-fuel smoke and (b) the KCl aerosol used to derive lab CADRs in Link et al. 2024, to support the claim that KCl-derived ASTM CADRs predict WUI smoke removal performance. I want a single figure comparing the two normalized distributions so I can write SI text from it.
-Data:
-
-WUI smoke: an SMPS export for Burn 01 (4/26/24 background burn), file MH_apollo_bed_04262024_NumConc.xlsx.
-KCl: a TSI SMPS text export, 20230320_chamber_conc.txt, which contains the KCl scans from the Link CADR work. This file is NOT yet in data_config.json; add an entry for it.
-
-Tasks:
-
-Add the KCl file path to data_config.json following the existing pattern. Do not hardcode paths anywhere in the script.
-First, inspect both files before writing processing logic. The .xlsx came through empty in another tool, so do not assume its structure. Print sheet names, header rows, column names, and a sample of cells for the xlsx; print the header block, the diameter-bin column, and column structure for the txt. Report back what you find. The TSI txt format has metadata rows, a "Diameter Midpoint" row that begins the size-distribution block (first column = midpoint diameter in nm, each numbered column = one timed scan of dN concentration), then summary rows (Median, Mean, Mode, Total Concentration, etc.) and footer rows at the bottom. Exclude those summary/footer rows from the distribution parsing.
-The txt file appears to contain multiple runs (the header references an ASTM chamber campaign). Do not assume all scans are the relevant KCl CADR data. Identify the candidate scans and pause to confirm with me which scan range to use before averaging.
-Once confirmed, for each dataset compute a representative size distribution: average dN/dlogDp across the selected scans (handle the TSI bin spacing correctly when converting to dN/dlogDp if the export is not already in that form; check the "Units" / "Weight" metadata rows to see what the values represent before transforming). Strip whitespace from any headers. Handle missing/zero cells.
-Normalize each averaged distribution (e.g., to unit peak or unit area, your choice but state it in a comment and make it easy to change) so the two can be compared on shape despite different concentration magnitudes. Report the geometric mean diameter and geometric standard deviation for each distribution to the console so I can cite numbers in the text.
-Produce one static publication figure (matplotlib, TEXT_CONFIG): both normalized distributions on a shared log-scale x-axis (particle diameter, nm), clearly labeled legend (WUI smoke Burn 01; KCl, Link et al. 2024), SI units, no title clutter beyond what's needed. Save to the repo's figures output location (check data_config or existing convention).
-Keep the script under ~1000 lines (it will be far shorter); if any reusable parsing logic emerges, note where it could move to a src/ module but don't over-engineer for a single SI figure.
-
-Do not invent values for the WUI file if its structure turns out to be unreadable or empty. If so, stop and tell me, rather than fabricating a distribution.
-Start with step 2 (inspection) and report before proceeding.
+  "common_folders": {
+    "burn_log": "C:/Users/Nathan/Documents/NIST/WUI_smoke/burn_log.xlsx",
+    "burn_dates_decay_aerotrak_bedroom": "C:/Users/Nathan/Documents/NIST/WUI_smoke/burn_dates_decay_aerotraks_bedroom.xlsx",
+    "burn_dates_decay_aerotrak_kitchen": "C:/Users/Nathan/Documents/NIST/WUI_smoke/burn_dates_decay_aerotraks_kitchen.xlsx",
+    "burn_dates_decay_smps": "C:/Users/Nathan/Documents/NIST/WUI_smoke/burn_dates_decay_smps.xlsx",
+    "peak_concentrations": "C:/Users/Nathan/Documents/NIST/WUI_smoke/burn_data/peak_concentrations_all_instruments.xlsx",
+    "spatial_variation": "C:/Users/Nathan/Documents/NIST/WUI_smoke/burn_data/spatial_variation_analysis.xlsx",
+    "output_figures": "C:/Users/Nathan/Documents/NIST/WUI_smoke/Paper_figures",
+    "burn_calcs": "C:/Users/Nathan/Documents/NIST/WUI_smoke/burn_data/burn_calcs",
+    "smps_export": "C:/Users/Nathan/Documents/NIST/WUI_smoke/burn_data/smps_export",
+    "coincidence_analysis": "C:/Users/Nathan/Documents/NIST/WUI_smoke/burn_data/coincidence_analysis",
+    "coincidence_figures": "C:/Users/Nathan/Documents/NIST/WUI_smoke/Paper_figures/coincidence_figures",
+    "quantaq_analysis": "C:/Users/Nathan/Documents/NIST/WUI_smoke/burn_data/quantaq_analysis",
+    "quantaq_figures": "C:/Users/Nathan/Documents/NIST/WUI_smoke/Paper_figures/quantaq_figures",
+    "kcl_cadr_smps": "C:/Users/Nathan/Documents/NIST/WUI_smoke/burn_data/smps/20230320_chamber_conc.txt"
+  }

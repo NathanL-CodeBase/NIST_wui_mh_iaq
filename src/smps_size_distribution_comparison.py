@@ -305,6 +305,7 @@ for lbl in ax.get_xticklabels() + ax.get_yticklabels():
 
 legend = ax.legend(
     fontsize=TC["legend_font_size"],
+    loc='lower right',
     frameon=True,
     framealpha=0.9,
     edgecolor="0.7",

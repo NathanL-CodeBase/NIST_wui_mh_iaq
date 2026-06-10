@@ -1,0 +1,7 @@
+    },
+    "co2": {
+      "path": "C:/Users/Nathan/Documents/NIST/WUI_smoke/burn_data/co2",
+      "description": "CO2 sensors (Aranet4) - Bedroom, Entry, and MH Outside locations",
+      "file_pattern": "*.csv",
+      "notes": "DD/MM/YYYY h:mm:ss AM/PM timestamp format; CO2 in ppm"
+    }

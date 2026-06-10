@@ -57,6 +57,12 @@
       "description": "Vaisala temperature and relative humidity sensors",
       "file_pattern": "*.xlsx",
       "notes": "Environmental monitoring across multiple locations"
+    },
+    "co2": {
+      "path": "PATH_TO_DATA_ROOT/burn_data/co2",
+      "description": "CO2 sensors (Aranet4) - Bedroom, Entry, and MH Outside locations",
+      "file_pattern": "*.csv",
+      "notes": "DD/MM/YYYY h:mm:ss AM/PM timestamp format; CO2 in ppm"
     }
   },
 

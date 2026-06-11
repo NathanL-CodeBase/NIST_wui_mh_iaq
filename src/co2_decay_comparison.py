@@ -47,12 +47,16 @@ DECAY_PERIODS = [
         "start": pd.Timestamp("2026-06-10 11:01:47"),
         "end": pd.Timestamp("2026-06-10 11:15:49"),
         "color": "#D55E00",
+        "x_frac": 0.5,
+        "y_frac": 0.62,
     },
     {
         "label": "Door open",
         "start": pd.Timestamp("2026-06-10 11:17:47"),
         "end": pd.Timestamp("2026-06-10 11:23:49"),
         "color": "#0072B2",
+        "x_frac": 0.33,
+        "y_frac": 0.25,
     },
 ]
 
@@ -287,16 +291,16 @@ for res in fit_results:
     )
 
 # Annotate decay rates inside their shaded bands
-annotation_offsets = [0.82, 0.48]  # y-position as fraction of axes height
-for res, y_frac in zip(fit_results, annotation_offsets):
-    x_mid = res["dt_fine"][len(res["dt_fine"]) // 2]
+for period, res in zip(DECAY_PERIODS, fit_results):
+    n = len(res["dt_fine"])
+    x_pos = res["dt_fine"][int(n * period["x_frac"])]
     k_val = res["k"]
     k_err = res["k_err"]
     ax.annotate(
         f"{res['label']}\n$k$ = {k_val:.2g} ± {k_err:.2g} hr$^{{-1}}$",
-        xy=(x_mid, 0),
+        xy=(x_pos, 0),
         xycoords=("data", "axes fraction"),
-        xytext=(x_mid, y_frac),
+        xytext=(x_pos, period["y_frac"]),
         textcoords=("data", "axes fraction"),
         ha="center",
         fontsize=10,

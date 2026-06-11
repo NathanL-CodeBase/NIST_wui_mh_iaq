@@ -38,20 +38,20 @@ output_dir.mkdir(parents=True, exist_ok=True)
 # ──────────────────────────────────────────────────────────────────────────────
 
 PLOT_START = pd.Timestamp("2026-06-10 11:01:00")
-PLOT_END   = pd.Timestamp("2026-06-10 11:25:00")
+PLOT_END = pd.Timestamp("2026-06-10 11:25:00")
 
 # Decay periods for bedroom CO2 (inclusive bounds)
 DECAY_PERIODS = [
     {
         "label": "Cleaner air space",
         "start": pd.Timestamp("2026-06-10 11:01:00"),
-        "end":   pd.Timestamp("2026-06-10 11:15:00"),
+        "end": pd.Timestamp("2026-06-10 11:15:00"),
         "color": "#D55E00",
     },
     {
         "label": "Door open",
         "start": pd.Timestamp("2026-06-10 11:17:00"),
-        "end":   pd.Timestamp("2026-06-10 11:24:00"),
+        "end": pd.Timestamp("2026-06-10 11:24:00"),
         "color": "#0072B2",
     },
 ]
@@ -113,7 +113,7 @@ def find_sensor_file(directory: Path, prefix: str) -> Path:
 
 
 bedroom_path = find_sensor_file(co2_dir, "Bedroom")
-entry_path   = find_sensor_file(co2_dir, "Entry")
+entry_path = find_sensor_file(co2_dir, "Entry")
 outside_path = find_sensor_file(co2_dir, "Mh Outside")
 
 print(f"Bedroom : {bedroom_path.name}")
@@ -175,9 +175,7 @@ def fit_decay(series: pd.Series, t_start: pd.Timestamp, t_end: pd.Timestamp):
         )
 
     # Time in minutes relative to start of period
-    t_min = np.array(
-        [(ts - t_start).total_seconds() / 60.0 for ts in seg.index], dtype=float
-    )
+    t_min = np.array([(ts - t_start).total_seconds() / 60.0 for ts in seg.index], dtype=float)
     co2 = seg.values.astype(float)
 
     a0 = co2[0]
@@ -197,7 +195,7 @@ def fit_decay(series: pd.Series, t_start: pd.Timestamp, t_end: pd.Timestamp):
         "co2": co2,
         "dt_fine": dt_fine,
         "fit": fit_curve,
-        "k": popt[1] * 60.0,        # convert min^-1 to hr^-1
+        "k": popt[1] * 60.0,  # convert min^-1 to hr^-1
         "k_err": perr[1] * 60.0,
         "a": popt[0],
         "a_err": perr[0],
@@ -215,7 +213,7 @@ for period in DECAY_PERIODS:
         f"\n{period['label']} ({period['start'].strftime('%H:%M')}–{period['end'].strftime('%H:%M')})"
         f"  n={result['n_pts']}"
     )
-    print(f"  k = {result['k']:.3g} +/- {result['k_err']:.3g} hr^-1")
+    print(f"  k = {result['k']:.4g} +/- {result['k_err']:.4g} hr^-1")
     print(f"  A = {result['a']:.1f} ± {result['a_err']:.1f} ppm")
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -226,7 +224,7 @@ TC = TEXT_CONFIG
 
 SENSOR_COLORS = {
     "Bedroom": "#333333",
-    "Entry":   "#E69F00",
+    "Entry": "#E69F00",
     "Outside": "#009E73",
 }
 
@@ -292,10 +290,10 @@ for res in fit_results:
 annotation_offsets = [0.82, 0.48]  # y-position as fraction of axes height
 for res, y_frac in zip(fit_results, annotation_offsets):
     x_mid = res["dt_fine"][len(res["dt_fine"]) // 2]
-    k_val  = res["k"]
-    k_err  = res["k_err"]
+    k_val = res["k"]
+    k_err = res["k_err"]
     ax.annotate(
-        f"{res['label']}\n$k$ = {k_val:.3g} ± {k_err:.3g} hr$^{{-1}}$",
+        f"{res['label']}\n$k$ = {k_val:.2g} ± {k_err:.2g} hr$^{{-1}}$",
         xy=(x_mid, 0),
         xycoords=("data", "axes fraction"),
         xytext=(x_mid, y_frac),
@@ -341,7 +339,7 @@ for txt in legend.get_texts():
     txt.set_fontweight(TC["font_style"])
 
 ax.grid(True, which="major", linestyle="--", linewidth=0.5, alpha=0.5, color="0.6")
-ax.grid(True, which="minor", linestyle=":",  linewidth=0.3, alpha=0.3, color="0.6")
+ax.grid(True, which="minor", linestyle=":", linewidth=0.3, alpha=0.3, color="0.6")
 
 fig.tight_layout()
 

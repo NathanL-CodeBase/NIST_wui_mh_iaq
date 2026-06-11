@@ -37,21 +37,21 @@ output_dir.mkdir(parents=True, exist_ok=True)
 # Analysis window and decay period definitions
 # ──────────────────────────────────────────────────────────────────────────────
 
-PLOT_START = pd.Timestamp("2026-06-10 11:01:00")
+PLOT_START = pd.Timestamp("2026-06-10 11:00:00")
 PLOT_END = pd.Timestamp("2026-06-10 11:25:00")
 
 # Decay periods for bedroom CO2 (inclusive bounds)
 DECAY_PERIODS = [
     {
         "label": "Cleaner air space",
-        "start": pd.Timestamp("2026-06-10 11:01:00"),
-        "end": pd.Timestamp("2026-06-10 11:15:00"),
+        "start": pd.Timestamp("2026-06-10 11:01:47"),
+        "end": pd.Timestamp("2026-06-10 11:15:49"),
         "color": "#D55E00",
     },
     {
         "label": "Door open",
-        "start": pd.Timestamp("2026-06-10 11:17:00"),
-        "end": pd.Timestamp("2026-06-10 11:24:00"),
+        "start": pd.Timestamp("2026-06-10 11:17:47"),
+        "end": pd.Timestamp("2026-06-10 11:23:49"),
         "color": "#0072B2",
     },
 ]

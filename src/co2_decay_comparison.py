@@ -48,15 +48,15 @@ DECAY_PERIODS = [
         "end": pd.Timestamp("2026-06-10 11:15:49"),
         "color": "#D55E00",
         "x_frac": 0.5,
-        "y_frac": 0.62,
+        "y_frac": 0.8,
     },
     {
         "label": "Door open",
         "start": pd.Timestamp("2026-06-10 11:17:47"),
         "end": pd.Timestamp("2026-06-10 11:23:49"),
         "color": "#0072B2",
-        "x_frac": 0.33,
-        "y_frac": 0.25,
+        "x_frac": 0.5,
+        "y_frac": 0.32,
     },
 ]
 

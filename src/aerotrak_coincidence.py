@@ -30,22 +30,22 @@ import sys
 import warnings
 from pathlib import Path
 
+import matplotlib
 import numpy as np
 import pandas as pd
-import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-
-from bokeh.plotting import figure, output_file, save
-from bokeh.models import Span, HoverTool, Label
-from bokeh.layouts import column as bokeh_column
 from bokeh.io import reset_output
+from bokeh.layouts import column as bokeh_column
+from bokeh.models import HoverTool, Label, Span
+from bokeh.plotting import figure, output_file, save
 
 # --- repository root on path ---------------------------------------------------
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
-from src.data_paths import get_instrument_path, get_common_file
+from src.data_paths import get_common_file, get_instrument_path
 
 # ==============================================================================
 # CONSTANTS
@@ -53,16 +53,16 @@ from src.data_paths import get_instrument_path, get_common_file
 
 # Optical sensing volumes from Poisson model  L = 1 - exp(-n*V)
 # TSI spec: 10 % coincidence at n = 1.4e5 /cm3 -> V_CENTRAL = -ln(0.9)/1.4e5
-V_CENTRAL = 7.5e-7   # cm3 (central estimate)
-V_LOW     = 5.0e-7   # cm3 (lower bound)
-V_HIGH    = 1.0e-6   # cm3 (upper bound)
+V_CENTRAL = 7.5e-7  # cm3 (central estimate)
+V_LOW = 5.0e-7  # cm3 (lower bound)
+V_HIGH = 1.0e-6  # cm3 (upper bound)
 
 # Coincidence threshold: manufacturer 10 % coincidence concentration
 COINCIDENCE_THRESHOLD_CM3 = 1.4e5  # particles/cm3
 
 # Reversal detection parameters
-REVERSAL_FRAC    = 0.5   # n_min < REVERSAL_FRAC * n_peak -> reversal present
-REVERSAL_WIN_MIN = 30    # search window after n_peak (minutes)
+REVERSAL_FRAC = 0.5  # n_min < REVERSAL_FRAC * n_peak -> reversal present
+REVERSAL_WIN_MIN = 30  # search window after n_peak (minutes)
 
 # Counts-conservation tolerance (fraction change allowed)
 CONSERVATION_TOL = 0.30
@@ -71,29 +71,29 @@ CONSERVATION_TOL = 0.30
 PARTICLE_DENSITY_G_CM3 = 1.0
 
 # Pre-burn baseline window
-BASELINE_MIN = 30   # minutes before ignition
+BASELINE_MIN = 30  # minutes before ignition
 
 # Maximum analysis window
 MAX_WIN_HR = 4.0
 
 # AeroTrak 9306-V2 size channels: (label, lower_um, upper_um)
 CHANNELS = [
-    ("Ch1", 0.3,  0.5),
-    ("Ch2", 0.5,  1.0),
-    ("Ch3", 1.0,  3.0),
-    ("Ch4", 3.0,  5.0),
-    ("Ch5", 5.0,  10.0),
+    ("Ch1", 0.3, 0.5),
+    ("Ch2", 0.5, 1.0),
+    ("Ch3", 1.0, 3.0),
+    ("Ch4", 3.0, 5.0),
+    ("Ch5", 5.0, 10.0),
     ("Ch6", 10.0, 25.0),
 ]
-ANALYSIS_CH = CHANNELS[:3]   # three smallest bins for coincidence check
+ANALYSIS_CH = CHANNELS[:3]  # three smallest bins for coincidence check
 
 # Instrument time shifts (minutes applied to raw timestamps)
 TIME_SHIFTS = {"AeroTrak1": 2.16, "AeroTrak2": 5.0}
 
 # Burns processed per instrument
 BURN_COVERAGE = {
-    "AeroTrak1": [f"burn{i}" for i in range(3, 11)],   # burn3-burn10
-    "AeroTrak2": [f"burn{i}" for i in range(2, 11)],   # burn2-burn10
+    "AeroTrak1": [f"burn{i}" for i in range(3, 11)],  # burn3-burn10
+    "AeroTrak2": [f"burn{i}" for i in range(2, 11)],  # burn2-burn10
 }
 
 # Burns where Bedroom 2 was sealed (flag in output; AeroTrak1 only)
@@ -113,23 +113,37 @@ TEXT_CONFIG = dict(fontsize=_FS, labelsize=_FS, ticksize=_FS, legendsize=_FS)
 COLOR = {
     "AeroTrak1": "#003f5c",
     "AeroTrak2": "#ef5675",
-    "smps":      "#ffa600",
+    "smps": "#ffa600",
 }
 
 # CSV column order for per-burn output
 _CSV_COLS = [
-    "burn", "instrument", "location", "bedroom_sealed",
-    "n_peak_cm3", "t_peak", "reversal_present", "reversal_duration_minutes",
+    "burn",
+    "instrument",
+    "location",
+    "bedroom_sealed",
+    "n_peak_cm3",
+    "t_peak",
+    "reversal_present",
+    "reversal_onset",
+    "t_min",
+    "reversal_end",
+    "reversal_duration_minutes",
     "reversal_onset_pre_pm3peak_minutes",
-    "L_central", "L_low", "L_high",
+    "L_central",
+    "L_low",
+    "L_high",
     "factor_vs_threshold",
-    "peak_total_PM3_mass_ug_m3", "counts_conserved",
-    "SMPS_ratio_during_vs_after", "notes",
+    "peak_total_PM3_mass_ug_m3",
+    "counts_conserved",
+    "SMPS_ratio_during_vs_after",
+    "notes",
 ]
 
 # ==============================================================================
 # BURN LOG
 # ==============================================================================
+
 
 def _load_burn_log() -> pd.DataFrame:
     """
@@ -150,15 +164,18 @@ def _load_burn_log() -> pd.DataFrame:
         bl[col] = bl.apply(
             lambda r, c=col: (
                 pd.Timestamp(f"{r['Date'].strftime('%Y-%m-%d')} {r[c]}")
-                if pd.notna(r[c]) else pd.NaT
+                if pd.notna(r[c])
+                else pd.NaT
             ),
             axis=1,
         )
     return bl
 
+
 # ==============================================================================
 # AEROTRAK LOADER
 # ==============================================================================
+
 
 def _load_aerotrak_all(instrument: str) -> pd.DataFrame:
     """
@@ -193,9 +210,9 @@ def _load_aerotrak_all(instrument: str) -> pd.DataFrame:
     df = df[ok].copy().reset_index(drop=True)
 
     # Sample volume
-    vol_L   = df["Volume (L)"]
-    vol_cm3 = vol_L * 1000.0    # cm3
-    vol_m3  = vol_L * 1e-3      # m3
+    vol_L = df["Volume (L)"]
+    vol_cm3 = vol_L * 1000.0  # cm3
+    vol_m3 = vol_L * 1e-3  # m3
 
     # Extract cut-point sizes from the first valid row
     size_val = {}
@@ -213,7 +230,7 @@ def _load_aerotrak_all(instrument: str) -> pd.DataFrame:
             continue
         lo_um = size_val[ch]
         next_ch = CHANNELS[i + 1][0] if i < len(CHANNELS) - 1 else None
-        hi_um   = float(size_val[next_ch]) if next_ch and next_ch in size_val else 25.0
+        hi_um = float(size_val[next_ch]) if next_ch and next_ch in size_val else 25.0
 
         diff_col = f"{ch} Diff (#)"
         if diff_col not in df.columns:
@@ -224,10 +241,10 @@ def _load_aerotrak_all(instrument: str) -> pd.DataFrame:
         df[conc_col] = df[diff_col] / vol_cm3
 
         # Single-particle mass (ug) via Mie sphere, density = 1 g/cm3
-        gm_um    = np.sqrt(lo_um * hi_um)          # geometric-mean diameter (um)
-        r_m      = gm_um * 1e-6 / 2.0              # radius (m)
-        vp_m3    = (4.0 / 3.0) * np.pi * r_m ** 3  # volume (m3)
-        mass_ug  = vp_m3 * 1e12                     # ug (1 g/cm3 density)
+        gm_um = np.sqrt(lo_um * hi_um)  # geometric-mean diameter (um)
+        r_m = gm_um * 1e-6 / 2.0  # radius (m)
+        vp_m3 = (4.0 / 3.0) * np.pi * r_m**3  # volume (m3)
+        mass_ug = vp_m3 * 1e12  # ug (1 g/cm3 density)
 
         # Differential mass concentration (ug/m3)
         diff_mass_col = f"PM{lo_um}-{hi_um} Diff (µg/m³)"
@@ -236,8 +253,12 @@ def _load_aerotrak_all(instrument: str) -> pd.DataFrame:
 
     # Cumulative PM mass (matches peak_concentration_script.py convention)
     cum_labels = [
-        "PM0.5 (µg/m³)", "PM1 (µg/m³)", "PM3 (µg/m³)",
-        "PM5 (µg/m³)", "PM10 (µg/m³)", "PM25 (µg/m³)",
+        "PM0.5 (µg/m³)",
+        "PM1 (µg/m³)",
+        "PM3 (µg/m³)",
+        "PM5 (µg/m³)",
+        "PM10 (µg/m³)",
+        "PM25 (µg/m³)",
     ]
     for i, label in enumerate(cum_labels):
         if i < len(pm_diff_cols):
@@ -254,9 +275,11 @@ def _day_slice(df: pd.DataFrame, burn_date: pd.Timestamp) -> pd.DataFrame:
     mask = df["Date and Time"].dt.date == burn_date.date()
     return df[mask].copy().reset_index(drop=True)
 
+
 # ==============================================================================
 # SMPS numConc LOADER
 # ==============================================================================
+
 
 def _smps_numconc_path(burn_date: pd.Timestamp) -> Path | None:
     """Locate SMPS numConc file for a given burn date (case-insensitive suffix)."""
@@ -319,10 +342,7 @@ def _load_smps_numconc(burn_date: pd.Timestamp) -> pd.DataFrame | None:
         return None
 
     # Convert size-bin columns (float keys) to numeric; Excel FALSE -> 0
-    size_cols = [
-        c for c in df.columns
-        if isinstance(c, float) and not isinstance(c, bool)
-    ]
+    size_cols = [c for c in df.columns if isinstance(c, float) and not isinstance(c, bool)]
     for c in size_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
@@ -343,17 +363,19 @@ def _smps_300_437(df_smps: pd.DataFrame) -> pd.Series:
         Summed number concentration (#/cm3, approximate) indexed like df_smps.
     """
     cols = [
-        c for c in df_smps.columns
-        if isinstance(c, float) and not isinstance(c, bool)
-        and 300.0 <= c <= 437.0
+        c
+        for c in df_smps.columns
+        if isinstance(c, float) and not isinstance(c, bool) and 300.0 <= c <= 437.0
     ]
     if not cols:
         return pd.Series(np.nan, index=df_smps.index)
     return df_smps[cols].sum(axis=1)
 
+
 # ==============================================================================
 # ANALYSIS HELPERS
 # ==============================================================================
+
 
 def _get_baseline(df_day: pd.DataFrame, ignition: pd.Timestamp) -> float:
     """
@@ -444,20 +466,27 @@ def _analyze_bin(
     -------
     dict
         Keys: n_peak, t_peak, n_min_during_reversal, t_min,
-              reversal_present, reversal_duration_minutes.
+              reversal_present, reversal_duration_minutes,
+              reversal_onset, reversal_end (full reversal interval bounds).
     """
     blank = dict(
-        n_peak=np.nan, t_peak=pd.NaT,
-        n_min_during_reversal=np.nan, t_min=pd.NaT,
-        reversal_present=False, reversal_duration_minutes=np.nan,
-        reversal_pre=False, t_min_pre=pd.NaT,
+        n_peak=np.nan,
+        t_peak=pd.NaT,
+        n_min_during_reversal=np.nan,
+        t_min=pd.NaT,
+        reversal_present=False,
+        reversal_duration_minutes=np.nan,
+        reversal_onset=pd.NaT,
+        reversal_end=pd.NaT,
+        reversal_pre=False,
+        t_min_pre=pd.NaT,
     )
 
     mask = (timestamps >= ignition) & (timestamps <= window_end) & series.notna()
     if mask.sum() < 5:
         return blank
 
-    s  = np.asarray(series[mask], dtype=float)
+    s = np.asarray(series[mask], dtype=float)
     ts = timestamps[mask].values  # numpy datetime64
 
     # Use the raw maximum as the coincidence peak. The initial spike is the
@@ -488,38 +517,44 @@ def _analyze_bin(
 
     # --- Check A: pre-peak V-shape ---
     reversal_pre = False
-    n_min_pre    = np.nan
-    t_min_pre    = pd.NaT
+    n_min_pre = np.nan
+    t_min_pre = pd.NaT
+    t_onset_pre = pd.NaT
     if peak_i > 1:
-        s_before  = s[:peak_i]
+        s_before = s[:peak_i]
         ts_before = ts[:peak_i]
-        thresh    = REVERSAL_FRAC * n_peak
+        thresh = REVERSAL_FRAC * n_peak
         # Only search for the dip AFTER the signal has risen above thresh.
         # Without this, the pre-smoke baseline (~0 #/cm³) would always be
         # identified as the minimum, and n_pre_dip would be ~0, causing
         # condition 2 in the original approach to always fail.
         above = np.where(s_before >= thresh)[0]
         if len(above) > 0:
-            first_above  = above[0]
-            s_post_rise  = s_before[first_above:]
+            first_above = above[0]
+            s_post_rise = s_before[first_above:]
             ts_post_rise = ts_before[first_above:]
-            dip_i_local  = int(np.nanargmin(s_post_rise))
-            n_dip        = float(s_post_rise[dip_i_local])
+            dip_i_local = int(np.nanargmin(s_post_rise))
+            n_dip = float(s_post_rise[dip_i_local])
             if n_dip < thresh:
                 reversal_pre = True
-                n_min_pre    = n_dip
-                t_min_pre    = pd.Timestamp(ts_post_rise[dip_i_local])
+                n_min_pre = n_dip
+                t_min_pre = pd.Timestamp(ts_post_rise[dip_i_local])
+                # Onset: first sample on the rise where the signal drops back
+                # below thresh (the leading edge of the dip).
+                below = np.where(s_post_rise[: dip_i_local + 1] < thresh)[0]
+                if below.size:
+                    t_onset_pre = pd.Timestamp(ts_post_rise[int(below[0])])
 
     # --- Check B: post-peak drop (original logic) ---
     reversal_post = False
-    n_min_post    = np.nan
-    t_min_post    = pd.NaT
-    t_search   = t_peak + pd.Timedelta(minutes=REVERSAL_WIN_MIN)
+    n_min_post = np.nan
+    t_min_post = pd.NaT
+    t_search = t_peak + pd.Timedelta(minutes=REVERSAL_WIN_MIN)
     after_peak = (ts > np.datetime64(t_peak)) & (ts <= np.datetime64(t_search))
     if after_peak.sum() > 0:
-        s_after    = s[after_peak]
-        ts_after   = ts[after_peak]
-        min_i      = int(np.argmin(s_after))
+        s_after = s[after_peak]
+        ts_after = ts[after_peak]
+        min_i = int(np.argmin(s_after))
         n_min_post = float(s_after[min_i])
         t_min_post = pd.Timestamp(ts_after[min_i])
         if n_min_post < REVERSAL_FRAC * n_peak:
@@ -532,22 +567,28 @@ def _analyze_bin(
         t_min = t_min_pre if reversal_pre else t_min_post
         assert isinstance(t_min, pd.Timestamp)  # always True inside this block
         result["n_min_during_reversal"] = n_min
-        result["t_min"]                 = t_min  # type: ignore[assignment]
+        result["t_min"] = t_min  # type: ignore[assignment]
 
-        # Duration: from t_min (bottom of dip) to first recovery to n_peak / 2
-        thresh    = n_peak / 2.0
-        post_lo   = ts > np.datetime64(t_min)  # type: ignore[operator]
-        s_rec     = s[post_lo]
-        ts_rec    = ts[post_lo]
+        # Reversal onset (leading edge of the dip). For the pre-peak case this
+        # is the downward threshold crossing found above; for the post-peak
+        # case the dip starts at t_peak.
+        t_onset = t_onset_pre if reversal_pre else t_peak
+        result["reversal_onset"] = t_onset  # type: ignore[assignment]
+
+        # Duration: from t_min (bottom of dip) to first recovery to n_peak / 2.
+        # That recovery time is also the trailing edge of the reversal interval.
+        thresh = n_peak / 2.0
+        post_lo = ts > np.datetime64(t_min)  # type: ignore[operator]
+        s_rec = s[post_lo]
+        ts_rec = ts[post_lo]
         recovered = s_rec >= thresh
         if recovered.any():
             t_rec = pd.Timestamp(ts_rec[int(np.argmax(recovered))])
-            result["reversal_duration_minutes"] = (
-                (t_rec - t_min).total_seconds() / 60.0
-            )
+            result["reversal_duration_minutes"] = (t_rec - t_min).total_seconds() / 60.0
+            result["reversal_end"] = t_rec  # type: ignore[assignment]
 
-    result["reversal_pre"]  = reversal_pre
-    result["t_min_pre"]     = t_min_pre if reversal_pre else pd.NaT  # type: ignore[assignment]
+    result["reversal_pre"] = reversal_pre
+    result["t_min_pre"] = t_min_pre if reversal_pre else pd.NaT  # type: ignore[assignment]
 
     return result
 
@@ -588,10 +629,7 @@ def _counts_conserved(
     if pd.isna(t_peak) or pd.isna(t_min):
         return None
 
-    conc_cols = [
-        c for c in df_day.columns
-        if "Ʃ" in str(c) and "#/cm" in str(c)
-    ]
+    conc_cols = [c for c in df_day.columns if "Ʃ" in str(c) and "#/cm" in str(c)]
     if not conc_cols:
         return None
 
@@ -603,7 +641,7 @@ def _counts_conserved(
         return float(df_day.loc[idx, conc_cols].sum())
 
     total_peak = _nearest_row_sum(t_peak)
-    total_min  = _nearest_row_sum(t_min)
+    total_min = _nearest_row_sum(t_min)
 
     if np.isnan(total_peak) or total_peak == 0:
         return None
@@ -634,7 +672,7 @@ def _smps_cross_check(
         return None
 
     smps_conc = _smps_300_437(df_smps)
-    smps_ts   = df_smps["datetime"]
+    smps_ts = df_smps["datetime"]
 
     def _aerotrak_nearest(t: pd.Timestamp) -> float:
         dt = (df_day["Date and Time"] - t).abs()
@@ -647,7 +685,7 @@ def _smps_cross_check(
         val = smps_conc.iloc[idx]
         return float(val) if dt.iloc[idx] <= pd.Timedelta("5min") else np.nan
 
-    at_ch1  = _aerotrak_nearest(t_min)
+    at_ch1 = _aerotrak_nearest(t_min)
     at_smps = _smps_nearest(t_min)
     if np.isnan(at_ch1) or np.isnan(at_smps) or at_smps == 0:
         return None
@@ -674,9 +712,11 @@ def _smps_cross_check(
 
     return float(ratio_tmin / np.mean(ratios))
 
+
 # ==============================================================================
 # MAIN PER-BURN ANALYSIS
 # ==============================================================================
+
 
 def analyze_burn_instrument(
     burn_id: str,
@@ -708,7 +748,7 @@ def analyze_burn_instrument(
         downstream plotting. Returns None if data are insufficient.
     """
     burn_date = bl_row["Date"]
-    ignition  = bl_row["Ignition"]
+    ignition = bl_row["Ignition"]
     if pd.isna(ignition):
         print(f"    [{burn_id}|{instrument}] No ignition time - skipped.")
         return None
@@ -720,7 +760,7 @@ def analyze_burn_instrument(
 
     # Pre-burn baseline and analysis window
     baseline_pm3 = _get_baseline(df_day, ignition)
-    window_end   = _find_window_end(df_day, ignition, baseline_pm3)
+    window_end = _find_window_end(df_day, ignition, baseline_pm3)
 
     # Peak PM3 mass within analysis window
     in_win = df_day[
@@ -753,11 +793,11 @@ def analyze_burn_instrument(
         print(f"    [{burn_id}|{instrument}] 0.3-0.5 um column absent - skipped.")
         return None
 
-    r1        = ch_results["Ch1"]
-    n_peak    = r1["n_peak"]
-    t_peak    = r1["t_peak"]
+    r1 = ch_results["Ch1"]
+    n_peak = r1["n_peak"]
+    t_peak = r1["t_peak"]
     t_min_ch1 = r1["t_min"]
-    ch1_col   = r1["col"]
+    ch1_col = r1["col"]
 
     # Coincidence loss estimates and threshold ratio
     if not np.isnan(n_peak):
@@ -773,9 +813,7 @@ def analyze_burn_instrument(
     # SMPS cross-check (AeroTrak1 only, burns where reversal detected)
     smps_ratio = None
     if instrument == "AeroTrak1" and r1["reversal_present"]:
-        smps_ratio = _smps_cross_check(
-            df_day, df_smps, t_min_ch1, window_end, ch1_col
-        )
+        smps_ratio = _smps_cross_check(df_day, df_smps, t_min_ch1, window_end, ch1_col)
 
     # Timing: how far the Ch1 reversal onset preceded the PM3 mass peak.
     # Only meaningful when Check A (pre-peak V-shape) detected the reversal.
@@ -783,52 +821,57 @@ def analyze_burn_instrument(
     # Negative = reversal onset after PM3 peak (flag in notes).
     reversal_onset_pre_pm3peak_minutes = np.nan
     if r1["reversal_pre"] and pd.notna(r1["t_min_pre"]):  # type: ignore[index]
-        t_min_pre_ch1  = pd.Timestamp(r1["t_min_pre"])    # type: ignore[index]
-        idx_pm3        = int(in_win["PM3 (µg/m³)"].idxmax())  # type: ignore[arg-type]
+        t_min_pre_ch1 = pd.Timestamp(r1["t_min_pre"])  # type: ignore[index]
+        idx_pm3 = int(in_win["PM3 (µg/m³)"].idxmax())  # type: ignore[arg-type]
         t_pm3_peak_row = df_day.loc[idx_pm3, "Date and Time"]
-        reversal_onset_pre_pm3peak_minutes = float(
-            (t_pm3_peak_row - t_min_pre_ch1).total_seconds()  # type: ignore[operator]
-        ) / 60.0
+        reversal_onset_pre_pm3peak_minutes = (
+            float(
+                (t_pm3_peak_row - t_min_pre_ch1).total_seconds()  # type: ignore[operator]
+            )
+            / 60.0
+        )
 
     notes_parts = []
     if instrument == "AeroTrak1" and burn_id in BEDROOM_SEALED_BURNS:
         notes_parts.append("bedroom sealed")
-    if (
-        not np.isnan(reversal_onset_pre_pm3peak_minutes)
-        and reversal_onset_pre_pm3peak_minutes < 0
-    ):
+    if not np.isnan(reversal_onset_pre_pm3peak_minutes) and reversal_onset_pre_pm3peak_minutes < 0:
         notes_parts.append("reversal onset post-PM3-peak (unexpected)")
 
     return {
         # --- CSV columns ---
-        "burn":                      burn_id,
-        "instrument":                instrument,
-        "location":                  "bedroom2" if instrument == "AeroTrak1" else "morning_room",
-        "bedroom_sealed":            (instrument == "AeroTrak1" and burn_id in BEDROOM_SEALED_BURNS),
-        "n_peak_cm3":                n_peak,
-        "t_peak":                    t_peak,
-        "reversal_present":          r1["reversal_present"],
+        "burn": burn_id,
+        "instrument": instrument,
+        "location": "bedroom2" if instrument == "AeroTrak1" else "morning_room",
+        "bedroom_sealed": (instrument == "AeroTrak1" and burn_id in BEDROOM_SEALED_BURNS),
+        "n_peak_cm3": n_peak,
+        "t_peak": t_peak,
+        "reversal_present": r1["reversal_present"],
+        "reversal_onset": r1["reversal_onset"],
+        "t_min": t_min_ch1,
+        "reversal_end": r1["reversal_end"],
         "reversal_duration_minutes": r1["reversal_duration_minutes"],
         "reversal_onset_pre_pm3peak_minutes": reversal_onset_pre_pm3peak_minutes,
-        "L_central":                 L_c,
-        "L_low":                     L_lo,
-        "L_high":                    L_hi,
-        "factor_vs_threshold":       factor_vs_threshold,
+        "L_central": L_c,
+        "L_low": L_lo,
+        "L_high": L_hi,
+        "factor_vs_threshold": factor_vs_threshold,
         "peak_total_PM3_mass_ug_m3": peak_pm3_mass,
-        "counts_conserved":          conserved,
+        "counts_conserved": conserved,
         "SMPS_ratio_during_vs_after": smps_ratio,
-        "notes":                     "; ".join(notes_parts),
+        "notes": "; ".join(notes_parts),
         # --- private: used by plotting functions ---
-        "_df_day":    df_day,
-        "_df_smps":   df_smps,
+        "_df_day": df_day,
+        "_df_smps": df_smps,
         "_ch_results": ch_results,
-        "_ignition":  ignition,
+        "_ignition": ignition,
         "_window_end": window_end,
     }
+
 
 # ==============================================================================
 # BOKEH PER-BURN FIGURES
 # ==============================================================================
+
 
 def _bokeh_individual(result: dict) -> None:
     """
@@ -839,16 +882,18 @@ def _bokeh_individual(result: dict) -> None:
 
     Output: coincidence_figures/aerotrak_coincidence_<burn>_<unit>.html
     """
-    burn_id    = result["burn"]
+    burn_id = result["burn"]
     instrument = result["instrument"]
-    df_day     = result["_df_day"]
-    df_smps    = result["_df_smps"]
-    ch_res     = result["_ch_results"]
-    ignition   = result["_ignition"]
+    df_day = result["_df_day"]
+    df_smps = result["_df_smps"]
+    ch_res = result["_ch_results"]
+    ignition = result["_ignition"]
     window_end = result["_window_end"]
 
-    unit_tag   = "aerotrak1" if instrument == "AeroTrak1" else "aerotrak2"
-    unit_label = "AeroTrak 1 - Bedroom 2" if instrument == "AeroTrak1" else "AeroTrak 2 - Morning Room"
+    unit_tag = "aerotrak1" if instrument == "AeroTrak1" else "aerotrak2"
+    unit_label = (
+        "AeroTrak 1 - Bedroom 2" if instrument == "AeroTrak1" else "AeroTrak 2 - Morning Room"
+    )
 
     # Time window for display: 30 min before ignition to window_end
     t_start = ignition - pd.Timedelta(minutes=30)
@@ -857,7 +902,7 @@ def _bokeh_individual(result: dict) -> None:
     for ch, lo, hi in ANALYSIS_CH:
         if ch not in ch_res:
             continue
-        r   = ch_res[ch]
+        r = ch_res[ch]
         col = r["col"]
 
         mask = (
@@ -871,15 +916,14 @@ def _bokeh_individual(result: dict) -> None:
             x_axis_type="datetime",
             height=280,
             width=950,
-            title=(
-                f"{burn_id}  |  {unit_label}  |  "
-                f"{lo}–{hi} µm count concentration (#/cm³)"
-            ),
+            title=(f"{burn_id}  |  {unit_label}  |  {lo}–{hi} µm count concentration (#/cm³)"),
             toolbar_location="right",
         )
         p.line(
-            sub["Date and Time"], sub[col],
-            color=COLOR[instrument], line_width=2.0,
+            sub["Date and Time"],
+            sub[col],
+            color=COLOR[instrument],
+            line_width=2.0,
             legend_label=instrument,
         )
 
@@ -890,11 +934,11 @@ def _bokeh_individual(result: dict) -> None:
             and df_smps is not None
             and r["reversal_present"]
         ):
-            smps_c   = _smps_300_437(df_smps)
+            smps_c = _smps_300_437(df_smps)
             # Buffer by one SMPS scan interval to handle minor timestamp offsets
             # between AeroTrak ignition time and SMPS scan cadence.
             smps_buf = pd.Timedelta(minutes=10)
-            smps_m   = (
+            smps_m = (
                 (df_smps["datetime"] >= t_start - smps_buf)
                 & (df_smps["datetime"] <= window_end + smps_buf)
                 & smps_c.notna()
@@ -913,36 +957,41 @@ def _bokeh_individual(result: dict) -> None:
                 p.line(
                     sub_s["datetime"],
                     smps_c[smps_m].values,
-                    color=COLOR["smps"], line_width=1.8,
+                    color=COLOR["smps"],
+                    line_width=1.8,
                     line_dash="dashed",
                     legend_label="SMPS 300–437 nm",
                 )
 
         # TSI 10 % coincidence threshold reference line on Ch1 panel only
         if ch == "Ch1":
-            p.add_layout(Span(
-                location=COINCIDENCE_THRESHOLD_CM3,
-                dimension="width",
-                line_color="gray",
-                line_dash="dotted",
-                line_width=1,
-            ))
-            p.add_layout(Label(
-                x=int(t_start.timestamp() * 1000),  # type: ignore[union-attr]
-                y=COINCIDENCE_THRESHOLD_CM3,
-                text="TSI 10% threshold",
-                text_font_size="10px",
-                text_color="gray",
-                x_units="data",
-                y_units="data",
-                y_offset=3,
-            ))
+            p.add_layout(
+                Span(
+                    location=COINCIDENCE_THRESHOLD_CM3,
+                    dimension="width",
+                    line_color="gray",
+                    line_dash="dotted",
+                    line_width=1,
+                )
+            )
+            p.add_layout(
+                Label(
+                    x=int(t_start.timestamp() * 1000),  # type: ignore[union-attr]
+                    y=COINCIDENCE_THRESHOLD_CM3,
+                    text="TSI 10% threshold",
+                    text_font_size="10px",
+                    text_color="gray",
+                    x_units="data",
+                    y_units="data",
+                    y_offset=3,
+                )
+            )
 
         # Vertical event lines
         events = [
-            (ignition,    "black",   "solid",   "Ignition"),
-            (r["t_peak"], "#d62728", "dashed",  "n_peak"),
-            (r["t_min"],  "#1f77b4", "dotted",  "n_min"),
+            (ignition, "black", "solid", "Ignition"),
+            (r["t_peak"], "#d62728", "dashed", "n_peak"),
+            (r["t_min"], "#1f77b4", "dotted", "n_min"),
         ]
         for t_ev, col_ev, dash_ev, lbl_ev in events:
             if pd.notna(t_ev):
@@ -973,9 +1022,11 @@ def _bokeh_individual(result: dict) -> None:
     save(bokeh_column(*panels))
     print(f"    [Bokeh] {out_path.name}")
 
+
 # ==============================================================================
 # MATPLOTLIB - SMALL MULTIPLES (SI figure)
 # ==============================================================================
+
 
 def _mpl_small_multiples(
     all_results: list[dict],
@@ -994,35 +1045,29 @@ def _mpl_small_multiples(
         key=lambda b: int(b.replace("burn", "")),
     )
     # Ignition lookup
-    ignitions = {
-        r["burn"]: r["_ignition"]
-        for r in all_results
-        if pd.notna(r["_ignition"])
-    }
+    ignitions = {r["burn"]: r["_ignition"] for r in all_results if pd.notna(r["_ignition"])}
     # t_peak lookup per (burn, instrument)
     t_peaks = {
-        (r["burn"], r["instrument"]): r["t_peak"]
-        for r in all_results
-        if pd.notna(r["t_peak"])
+        (r["burn"], r["instrument"]): r["t_peak"] for r in all_results if pd.notna(r["t_peak"])
     }
 
     ncols = 3
     nrows = int(np.ceil(len(all_burns) / ncols))
     fig, axes = plt.subplots(
-        nrows, ncols,
+        nrows,
+        ncols,
         figsize=(5.5 * ncols, 4.0 * nrows),
         constrained_layout=True,
     )
     axes = np.array(axes).flatten()
 
     for ax_idx, burn_id in enumerate(all_burns):
-        ax     = axes[ax_idx]
-        ignit  = ignitions.get(burn_id)
+        ax = axes[ax_idx]
+        ignit = ignitions.get(burn_id)
         if ignit is None:
             ax.set_visible(False)
             continue
 
-        has_line = False
         for instr, df_all, lbl in [
             ("AeroTrak1", df_at1, "Bedroom 2"),
             ("AeroTrak2", df_at2, "Morning Room"),
@@ -1035,19 +1080,20 @@ def _mpl_small_multiples(
                 continue
 
             sub = _day_slice(df_all, pd.Timestamp(burn_date))
-            ch1 = next(
-                (c for c in sub.columns if "Ʃ0.3-0.5µm" in c), None
-            )
+            ch1 = next((c for c in sub.columns if "Ʃ0.3-0.5µm" in c), None)
             if ch1 is None:
                 continue
 
             t_min_norm = (sub["Date and Time"] - ignit).dt.total_seconds() / 60.0
             vals = sub[ch1].replace(0, np.nan)
             ax.semilogy(
-                t_min_norm, vals,
-                color=COLOR[instr], lw=1.0, label=lbl, alpha=0.85,
+                t_min_norm,
+                vals,
+                color=COLOR[instr],
+                lw=1.0,
+                label=lbl,
+                alpha=0.85,
             )
-            has_line = True
 
             # Mark t_peak for this instrument on this burn
             tp = t_peaks.get((burn_id, instr))
@@ -1055,23 +1101,37 @@ def _mpl_small_multiples(
                 tp_min = (tp - ignit).total_seconds() / 60.0
                 ax.axvline(tp_min, color=COLOR[instr], lw=0.8, ls=":")
 
-        ax.axvline(0, color="black", lw=0.9, ls="--", label="Ignition")
+        ax.axvline(0, color="black", lw=0.9, ls="--")
         ax.set_xlim(-15, MAX_WIN_HR * 60)
         ax.set_xlabel("min from ignition", fontsize=TEXT_CONFIG["labelsize"])
         ax.set_ylabel("#/cm³", fontsize=TEXT_CONFIG["labelsize"])
         ax.tick_params(labelsize=TEXT_CONFIG["ticksize"])
         ax.set_title(burn_id, fontsize=TEXT_CONFIG["labelsize"], fontweight="bold")
 
-        if ax_idx == 0 and has_line:
-            ax.legend(fontsize=TEXT_CONFIG["legendsize"], loc="upper right")
-
-    for ax in axes[len(all_burns):]:
+    for ax in axes[len(all_burns) :]:
         ax.set_visible(False)
 
-    fig_dir  = get_common_file("coincidence_figures")
+    # Single figure-level legend with a fixed handle set, independent of which
+    # series happen to appear in any given panel (e.g. burn2 has no Bedroom 2).
+    from matplotlib.lines import Line2D
+
+    legend_handles = [
+        Line2D([0], [0], color=COLOR["AeroTrak1"], lw=1.5, label="Bedroom 2"),
+        Line2D([0], [0], color=COLOR["AeroTrak2"], lw=1.5, label="Morning Room"),
+        Line2D([0], [0], color="black", lw=0.9, ls="--", label="Ignition"),
+    ]
+    fig.legend(
+        handles=legend_handles,
+        loc="upper right",
+        bbox_to_anchor=(0.995, 0.8),
+        fontsize=TEXT_CONFIG["legendsize"],
+        frameon=True,
+    )
+
+    fig_dir = get_common_file("coincidence_figures")
     fig_dir.mkdir(parents=True, exist_ok=True)
     out_path = fig_dir / "aerotrak_coincidence_small_multiples.png"
-    fig.savefig(str(out_path), dpi=200, bbox_inches="tight")
+    fig.savefig(str(out_path), dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"    [mpl] {out_path.name}")
 
@@ -1087,18 +1147,23 @@ def bl_row_date_from_results(
                 return df["Date and Time"].dt.date.iloc[0]
     return None
 
+
 # ==============================================================================
 # MATPLOTLIB - OVERLAY (main-text figure)
 # ==============================================================================
 
+
 def _mpl_overlay(all_results: list[dict]) -> None:
     """
     Single panel: all AeroTrak2 (Morning Room) burns overlaid. Ch1 count
-    (#/cm3), x-axis normalized to t_peak = 0 (minutes). Log y-axis.
+    (#/cm3) vs minutes from ignition (a fixed physical event, so the rising
+    edge aligns across burns instead of smearing on a ragged t_peak). Log
+    y-axis. Individual burns are drawn faint; a bold median trace with a
+    shaded IQR band summarises the typical reversal shape through the
+    spaghetti.
     """
     at2 = [
-        r for r in all_results
-        if r["instrument"] == "AeroTrak2" and pd.notna(r.get("t_peak"))
+        r for r in all_results if r["instrument"] == "AeroTrak2" and pd.notna(r.get("_ignition"))
     ]
     if not at2:
         print("    [mpl] No AeroTrak2 results for overlay figure.")
@@ -1106,30 +1171,74 @@ def _mpl_overlay(all_results: list[dict]) -> None:
 
     fig, ax = plt.subplots(figsize=(7.5, 5.0))
 
-    cmap   = plt.get_cmap("viridis", len(at2))
+    cmap = plt.get_cmap("viridis", len(at2))
     all_burns_sorted = sorted(at2, key=lambda r: int(r["burn"].replace("burn", "")))
 
+    # Common time grid (minutes from ignition) for the median/IQR summary.
+    # 1-minute resolution over the displayed window.
+    grid = np.arange(-15.0, MAX_WIN_HR * 60.0 + 1.0, 1.0)
+    interp_stack = []
+
     for i, r in enumerate(all_burns_sorted):
-        df_day  = r["_df_day"]
-        t_peak  = r["t_peak"]
+        df_day = r["_df_day"]
+        ignit = r["_ignition"]
         burn_id = r["burn"]
 
-        ch1 = next(
-            (c for c in df_day.columns if "Ʃ0.3-0.5µm" in c), None
-        )
+        ch1 = next((c for c in df_day.columns if "Ʃ0.3-0.5µm" in c), None)
         if ch1 is None:
             continue
 
-        t_norm = (df_day["Date and Time"] - t_peak).dt.total_seconds() / 60.0
-        vals   = df_day[ch1].replace(0, np.nan)
+        t_norm = (df_day["Date and Time"] - ignit).dt.total_seconds() / 60.0
+        vals = df_day[ch1].replace(0, np.nan)
 
-        ax.semilogy(t_norm, vals, color=cmap(i), lw=1.4,
-                    label=burn_id, alpha=0.85)
+        # Faint individual burn trace
+        ax.semilogy(t_norm, vals, color=cmap(i), lw=0.8, label=burn_id, alpha=0.35)
 
-    ax.axvline(0, color="black", lw=1.0, ls="--", label="t_peak")
-    ax.set_xlim(-20, 120)
+        # Resample onto the common grid for the summary band. Mask points
+        # outside the burn's own time span so flat extrapolation does not bias
+        # the median at the edges.
+        t_arr = t_norm.to_numpy(dtype=float)
+        v_arr = vals.to_numpy(dtype=float)
+        order = np.argsort(t_arr)
+        t_arr, v_arr = t_arr[order], v_arr[order]
+        finite = np.isfinite(t_arr) & np.isfinite(v_arr)
+        if finite.sum() < 2:
+            continue
+        t_arr, v_arr = t_arr[finite], v_arr[finite]
+        gi = np.interp(grid, t_arr, v_arr, left=np.nan, right=np.nan)
+        interp_stack.append(gi)
+
+    # Median and IQR band across burns (ignoring NaN where a burn lacks data)
+    if interp_stack:
+        stack = np.vstack(interp_stack)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            med = np.nanmedian(stack, axis=0)
+            q25 = np.nanpercentile(stack, 25, axis=0)
+            q75 = np.nanpercentile(stack, 75, axis=0)
+        valid = np.isfinite(med)
+        ax.fill_between(
+            grid[valid],
+            q25[valid],
+            q75[valid],
+            color="#003f5c",
+            alpha=0.20,
+            label="IQR (across burns)",
+            zorder=4,
+        )
+        ax.semilogy(
+            grid[valid],
+            med[valid],
+            color="#003f5c",
+            lw=2.6,
+            label="Median",
+            zorder=5,
+        )
+
+    ax.axvline(0, color="black", lw=1.0, ls="--", label="Ignition")
+    ax.set_xlim(-15, MAX_WIN_HR * 60)
     ax.set_xlabel(
-        "Minutes relative to nₚₑₐₖ",
+        "Minutes from ignition",
         fontsize=TEXT_CONFIG["labelsize"],
         fontweight="bold",
     )
@@ -1140,22 +1249,24 @@ def _mpl_overlay(all_results: list[dict]) -> None:
     )
     ax.tick_params(labelsize=TEXT_CONFIG["ticksize"])
     ax.set_title(
-        "AeroTrak 2 (Morning Room) — all burns, Ch1 normalised to nₚₑₐₖ",
+        "AeroTrak 2 (Morning Room) — Ch1 count, all burns aligned to ignition",
         fontsize=TEXT_CONFIG["labelsize"],
         fontweight="bold",
     )
-    ax.legend(fontsize=TEXT_CONFIG["legendsize"], ncol=2, loc="upper right")
+    ax.legend(fontsize=TEXT_CONFIG["legendsize"], ncol=2, loc="lower right")
 
-    fig_dir  = get_common_file("coincidence_figures")
+    fig_dir = get_common_file("coincidence_figures")
     fig_dir.mkdir(parents=True, exist_ok=True)
     out_path = fig_dir / "aerotrak_coincidence_overlay.png"
-    fig.savefig(str(out_path), dpi=200, bbox_inches="tight")
+    fig.savefig(str(out_path), dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"    [mpl] {out_path.name}")
+
 
 # ==============================================================================
 # MATPLOTLIB - LOSS VS PEAK MASS (main-text scatter)
 # ==============================================================================
+
 
 def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
     """
@@ -1164,7 +1275,8 @@ def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
     Horizontal reference line at L = 0.10 (manufacturer 10 % threshold).
     """
     records = [
-        r for r in all_results
+        r
+        for r in all_results
         if not np.isnan(r.get("L_central", np.nan))
         and not np.isnan(r.get("peak_total_PM3_mass_ug_m3", np.nan))
     ]
@@ -1178,27 +1290,29 @@ def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
     plotted = set()
 
     for r in records:
-        loc  = r["location"]
-        x    = r["peak_total_PM3_mass_ug_m3"]
-        y    = r["L_central"]
+        loc = r["location"]
+        x = r["peak_total_PM3_mass_ug_m3"]
+        y = r["L_central"]
         y_lo = max(0.0, y - r["L_low"])
         y_hi = max(0.0, r["L_high"] - y)
-        lbl  = loc.replace("_", " ").title() if loc not in plotted else None
+        lbl = loc.replace("_", " ").title() if loc not in plotted else None
         plotted.add(loc)
 
         ax.errorbar(
-            x, y,
+            x,
+            y,
             yerr=[[y_lo], [y_hi]],
             fmt=markers.get(loc, "o"),
-            color=COLOR.get(
-                "AeroTrak1" if loc == "bedroom2" else "AeroTrak2", "gray"
-            ),
-            markersize=7, capsize=4, alpha=0.85,
+            color=COLOR.get("AeroTrak1" if loc == "bedroom2" else "AeroTrak2", "gray"),
+            markersize=7,
+            capsize=4,
+            alpha=0.85,
             label=lbl,
         )
         ax.annotate(
             r["burn"][-2:],
-            xy=(x, y), xytext=(3, 3),
+            xy=(x, y),
+            xytext=(3, 3),
             textcoords="offset points",
             fontsize=8,
         )
@@ -1206,29 +1320,34 @@ def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
     ax.axhline(0.10, color="gray", lw=0.9, ls=":", label="10 % threshold")
     ax.set_xlabel(
         "Peak PM3 mass (µg/m³)",
-        fontsize=TEXT_CONFIG["labelsize"], fontweight="bold",
+        fontsize=TEXT_CONFIG["labelsize"],
+        fontweight="bold",
     )
     ax.set_ylabel(
         "Coincidence loss L (fraction)",
-        fontsize=TEXT_CONFIG["labelsize"], fontweight="bold",
+        fontsize=TEXT_CONFIG["labelsize"],
+        fontweight="bold",
     )
     ax.tick_params(labelsize=TEXT_CONFIG["ticksize"])
     ax.set_title(
         "Estimated coincidence loss vs peak PM3 mass",
-        fontsize=TEXT_CONFIG["labelsize"], fontweight="bold",
+        fontsize=TEXT_CONFIG["labelsize"],
+        fontweight="bold",
     )
     ax.legend(fontsize=TEXT_CONFIG["legendsize"])
 
-    fig_dir  = get_common_file("coincidence_figures")
+    fig_dir = get_common_file("coincidence_figures")
     fig_dir.mkdir(parents=True, exist_ok=True)
     out_path = fig_dir / "aerotrak_loss_vs_peakmass.png"
-    fig.savefig(str(out_path), dpi=200, bbox_inches="tight")
+    fig.savefig(str(out_path), dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"    [mpl] {out_path.name}")
+
 
 # ==============================================================================
 # CSV OUTPUTS
 # ==============================================================================
+
 
 def _write_csv(all_results: list[dict]) -> None:
     """
@@ -1240,7 +1359,7 @@ def _write_csv(all_results: list[dict]) -> None:
 
     # Per-burn table
     rows = [{k: r.get(k, np.nan) for k in _CSV_COLS} for r in all_results]
-    df   = pd.DataFrame(rows, columns=_CSV_COLS)
+    df = pd.DataFrame(rows, columns=_CSV_COLS)
 
     per_burn_path = out_dir / "aerotrak_coincidence_per_burn.csv"
     df.to_csv(str(per_burn_path), index=False, float_format="%.4g")
@@ -1248,17 +1367,21 @@ def _write_csv(all_results: list[dict]) -> None:
 
     # Cross-burn summary statistics
     valid = df[df["n_peak_cm3"].notna()].copy()
-    rev   = valid[valid["reversal_present"] == True]
+    rev = valid[valid["reversal_present"] == True]
 
     def _q_stats(col: str) -> dict:
         s = valid[col].dropna()
         if s.empty:
-            return {f"{col}_median": np.nan, f"{col}_IQR": np.nan,
-                    f"{col}_range_min": np.nan, f"{col}_range_max": np.nan}
+            return {
+                f"{col}_median": np.nan,
+                f"{col}_IQR": np.nan,
+                f"{col}_range_min": np.nan,
+                f"{col}_range_max": np.nan,
+            }
         q25, q75 = s.quantile([0.25, 0.75])
         return {
-            f"{col}_median":    float(s.median()),
-            f"{col}_IQR":       float(q75 - q25),
+            f"{col}_median": float(s.median()),
+            f"{col}_IQR": float(q75 - q25),
             f"{col}_range_min": float(s.min()),
             f"{col}_range_max": float(s.max()),
         }
@@ -1268,19 +1391,20 @@ def _write_csv(all_results: list[dict]) -> None:
         summary.update(_q_stats(col))
 
     summary["n_reversal_present"] = int(rev.shape[0])
-    summary["n_total_pairs"]      = int(valid.shape[0])
+    summary["n_total_pairs"] = int(valid.shape[0])
     summary["median_peak_PM3_with_reversal_ug_m3"] = (
-        float(rev["peak_total_PM3_mass_ug_m3"].median())
-        if not rev.empty else np.nan
+        float(rev["peak_total_PM3_mass_ug_m3"].median()) if not rev.empty else np.nan
     )
 
     summary_path = out_dir / "aerotrak_coincidence_cross_burn_summary.csv"
     pd.DataFrame([summary]).to_csv(str(summary_path), index=False, float_format="%.4g")
     print(f"    [CSV] {summary_path.name}")
 
+
 # ==============================================================================
 # MARKDOWN OUTPUTS
 # ==============================================================================
+
 
 def _write_markdown(all_results: list[dict]) -> None:
     """
@@ -1293,22 +1417,34 @@ def _write_markdown(all_results: list[dict]) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     valid = [r for r in all_results if not np.isnan(r.get("n_peak_cm3", np.nan))]
-    rev   = [r for r in valid if r.get("reversal_present")]
+    rev = [r for r in valid if r.get("reversal_present")]
 
     n_total = len(valid)
-    n_rev   = len(rev)
+    n_rev = len(rev)
 
-    n_peak_arr  = np.array([r["n_peak_cm3"] for r in valid])
-    L_arr       = np.array([r["L_central"] for r in valid
-                             if not np.isnan(r.get("L_central", np.nan))])
-    dur_arr     = np.array([r["reversal_duration_minutes"] for r in rev
-                             if not np.isnan(r.get("reversal_duration_minutes", np.nan))])
-    pm3_rev_arr = np.array([r["peak_total_PM3_mass_ug_m3"] for r in rev
-                             if not np.isnan(r.get("peak_total_PM3_mass_ug_m3", np.nan))])
-    timing_arr  = np.array([r["reversal_onset_pre_pm3peak_minutes"] for r in rev
-                             if not np.isnan(
-                                 r.get("reversal_onset_pre_pm3peak_minutes", np.nan)
-                             )])
+    n_peak_arr = np.array([r["n_peak_cm3"] for r in valid])
+    L_arr = np.array([r["L_central"] for r in valid if not np.isnan(r.get("L_central", np.nan))])
+    dur_arr = np.array(
+        [
+            r["reversal_duration_minutes"]
+            for r in rev
+            if not np.isnan(r.get("reversal_duration_minutes", np.nan))
+        ]
+    )
+    pm3_rev_arr = np.array(
+        [
+            r["peak_total_PM3_mass_ug_m3"]
+            for r in rev
+            if not np.isnan(r.get("peak_total_PM3_mass_ug_m3", np.nan))
+        ]
+    )
+    timing_arr = np.array(
+        [
+            r["reversal_onset_pre_pm3peak_minutes"]
+            for r in rev
+            if not np.isnan(r.get("reversal_onset_pre_pm3peak_minutes", np.nan))
+        ]
+    )
 
     cons_fails = [r for r in rev if r.get("counts_conserved") is False]
 
@@ -1323,15 +1459,15 @@ def _write_markdown(all_results: list[dict]) -> None:
         )
         print("    [MD] aerotrak_coincidence_summary.md")
     else:
-        med_dur     = float(np.median(dur_arr))     if len(dur_arr) > 0     else np.nan
-        min_dur     = float(np.min(dur_arr))        if len(dur_arr) > 0     else np.nan
-        max_dur     = float(np.max(dur_arr))        if len(dur_arr) > 0     else np.nan
+        med_dur = float(np.median(dur_arr)) if len(dur_arr) > 0 else np.nan
+        min_dur = float(np.min(dur_arr)) if len(dur_arr) > 0 else np.nan
+        max_dur = float(np.max(dur_arr)) if len(dur_arr) > 0 else np.nan
         med_pm3_rev = float(np.median(pm3_rev_arr)) if len(pm3_rev_arr) > 0 else np.nan
-        med_npeak   = float(np.median(n_peak_arr))
-        factor_med  = med_npeak / COINCIDENCE_THRESHOLD_CM3
-        min_L       = float(np.min(L_arr))  if len(L_arr) > 0 else np.nan
-        max_L       = float(np.max(L_arr))  if len(L_arr) > 0 else np.nan
-        n_fail      = len(cons_fails)
+        med_npeak = float(np.median(n_peak_arr))
+        factor_med = med_npeak / COINCIDENCE_THRESHOLD_CM3
+        min_L = float(np.min(L_arr)) if len(L_arr) > 0 else np.nan
+        max_L = float(np.max(L_arr)) if len(L_arr) > 0 else np.nan
+        n_fail = len(cons_fails)
 
         para1 = (
             f"{n_rev} of {n_total} burn-instrument pairs showed a Ch1 reversal "
@@ -1375,7 +1511,9 @@ def _write_markdown(all_results: list[dict]) -> None:
 
         parts = [
             "# AeroTrak Coincidence Analysis - Summary\n\n## Plain-language summary",
-            para1, para2, para3,
+            para1,
+            para2,
+            para3,
         ]
         if para4:
             parts.append(para4)
@@ -1387,25 +1525,26 @@ def _write_markdown(all_results: list[dict]) -> None:
 
     # ── aerotrak_manuscript_sentences.md (five sentence templates) ───────────
     # Aggregate stats
-    med_dur_s   = _fmt(float(np.median(dur_arr))     if len(dur_arr) > 0     else np.nan, ".0f")
-    min_dur_s   = _fmt(float(np.min(dur_arr))        if len(dur_arr) > 0     else np.nan, ".0f")
-    max_dur_s   = _fmt(float(np.max(dur_arr))        if len(dur_arr) > 0     else np.nan, ".0f")
-    med_pm3_s   = _fmt(float(np.median(pm3_rev_arr)) if len(pm3_rev_arr) > 0 else np.nan, ".0f")
-    min_pm3_s   = _fmt(float(np.min(pm3_rev_arr))    if len(pm3_rev_arr) > 0 else np.nan, ".0f")
+    med_dur_s = _fmt(float(np.median(dur_arr)) if len(dur_arr) > 0 else np.nan, ".0f")
+    min_dur_s = _fmt(float(np.min(dur_arr)) if len(dur_arr) > 0 else np.nan, ".0f")
+    max_dur_s = _fmt(float(np.max(dur_arr)) if len(dur_arr) > 0 else np.nan, ".0f")
+    med_pm3_s = _fmt(float(np.median(pm3_rev_arr)) if len(pm3_rev_arr) > 0 else np.nan, ".0f")
+    min_pm3_s = _fmt(float(np.min(pm3_rev_arr)) if len(pm3_rev_arr) > 0 else np.nan, ".0f")
 
-    min_npeak   = float(np.min(n_peak_arr))    if len(n_peak_arr) > 0 else np.nan
-    max_npeak   = float(np.max(n_peak_arr))    if len(n_peak_arr) > 0 else np.nan
+    min_npeak = float(np.min(n_peak_arr)) if len(n_peak_arr) > 0 else np.nan
+    max_npeak = float(np.max(n_peak_arr)) if len(n_peak_arr) > 0 else np.nan
     med_npeak_s = float(np.median(n_peak_arr)) if len(n_peak_arr) > 0 else np.nan
-    factor_ms   = med_npeak_s / COINCIDENCE_THRESHOLD_CM3 if not np.isnan(med_npeak_s) else np.nan
-    max_L_pct   = float(np.max(L_arr)) * 100 if len(L_arr) > 0 else np.nan
-    med_L_pct   = float(np.median(L_arr)) * 100 if len(L_arr) > 0 else np.nan
+    factor_ms = med_npeak_s / COINCIDENCE_THRESHOLD_CM3 if not np.isnan(med_npeak_s) else np.nan
+    max_L_pct = float(np.max(L_arr)) * 100 if len(L_arr) > 0 else np.nan
+    med_L_pct = float(np.median(L_arr)) * 100 if len(L_arr) > 0 else np.nan
 
-    n_fail_s    = len(cons_fails)
-    n_pre_s     = len(timing_arr)
+    n_fail_s = len(cons_fails)
+    n_pre_s = len(timing_arr)
 
     # Worked example: reversal pair with the largest n_peak (most dramatic event)
     ex_cands = [
-        r for r in rev
+        r
+        for r in rev
         if "_ch_results" in r
         and "Ch1" in r["_ch_results"]
         and not np.isnan(r.get("n_peak_cm3", np.nan))
@@ -1414,17 +1553,15 @@ def _write_markdown(all_results: list[dict]) -> None:
     ex = max(ex_cands, key=lambda r: r["n_peak_cm3"]) if ex_cands else None
 
     if ex is not None:
-        ex_burn    = ex["burn"]
-        ex_loc     = str(ex["location"]).replace("_", " ")
-        ex_n_pre   = float(ex["n_peak_cm3"])
-        ex_n_min   = float(ex["_ch_results"]["Ch1"]["n_min_during_reversal"])
-        ex_dur     = float(ex["reversal_duration_minutes"])
-        ex_pm3     = float(ex["peak_total_PM3_mass_ug_m3"])
-        ex_L_pct   = float(ex["L_central"]) * 100
-        ex_supp    = (
-            (1.0 - ex_n_min / ex_n_pre) * 100
-            if not np.isnan(ex_n_min) and ex_n_pre > 0
-            else np.nan
+        ex_burn = ex["burn"]
+        ex_loc = str(ex["location"]).replace("_", " ")
+        ex_n_pre = float(ex["n_peak_cm3"])
+        ex_n_min = float(ex["_ch_results"]["Ch1"]["n_min_during_reversal"])
+        ex_dur = float(ex["reversal_duration_minutes"])
+        ex_pm3 = float(ex["peak_total_PM3_mass_ug_m3"])
+        ex_L_pct = float(ex["L_central"]) * 100
+        ex_supp = (
+            (1.0 - ex_n_min / ex_n_pre) * 100 if not np.isnan(ex_n_min) and ex_n_pre > 0 else np.nan
         )
     else:
         ex_burn = ex_loc = "[no example]"
@@ -1477,11 +1614,11 @@ def _write_markdown(all_results: list[dict]) -> None:
         "# AeroTrak Coincidence - Manuscript Sentences for Section 3.2.2\n\n"
         "_All values derived from data. Insert into manuscript text._\n\n"
         "---\n\n"
-        f"**Sentence 1 (reversal prevalence):** \"{s1}\"\n\n"
-        f"**Sentence 2 (coincidence hypothesis test - null result):** \"{s2}\"\n\n"
-        f"**Sentence 3 (counts conservation):** \"{s3}\"\n\n"
-        f"**Sentence 4 (practical threshold):** \"{s4}\"\n\n"
-        f"**Sentence 5 (worked example: {ex_burn}, {ex_loc}):** \"{s5}\"\n\n"
+        f'**Sentence 1 (reversal prevalence):** "{s1}"\n\n'
+        f'**Sentence 2 (coincidence hypothesis test - null result):** "{s2}"\n\n'
+        f'**Sentence 3 (counts conservation):** "{s3}"\n\n'
+        f'**Sentence 4 (practical threshold):** "{s4}"\n\n'
+        f'**Sentence 5 (worked example: {ex_burn}, {ex_loc}):** "{s5}"\n\n'
         "---\n\n"
         "## Supporting statistics\n\n"
         "| Quantity | Value |\n"
@@ -1495,14 +1632,14 @@ def _write_markdown(all_results: list[dict]) -> None:
         f"| Pairs with pre-peak timing data | {n_pre_s} of {n_rev} |\n"
         f"| Factor below TSI threshold (median) | {_fmt(factor_ms, '.2f')} |\n"
     )
-    (out_dir / "aerotrak_manuscript_sentences.md").write_text(
-        ms_text, encoding="utf-8"
-    )
+    (out_dir / "aerotrak_manuscript_sentences.md").write_text(ms_text, encoding="utf-8")
     print("    [MD] aerotrak_manuscript_sentences.md")
+
 
 # ==============================================================================
 # MAIN
 # ==============================================================================
+
 
 def main() -> None:
     """
@@ -1523,13 +1660,15 @@ def main() -> None:
     all_results: list[dict] = []
 
     for instrument, df_aerotrak in [("AeroTrak1", df_at1), ("AeroTrak2", df_at2)]:
-        print(f"\nProcessing {instrument} ({'Bedroom 2' if instrument == 'AeroTrak1' else 'Morning Room'})...")
+        print(
+            f"\nProcessing {instrument} ({'Bedroom 2' if instrument == 'AeroTrak1' else 'Morning Room'})..."
+        )
 
         for burn_id in BURN_COVERAGE[instrument]:
             bl_rows = burn_log[burn_log["Burn ID"] == burn_id]
             if bl_rows.empty:
                 continue
-            bl_row    = bl_rows.iloc[0]
+            bl_row = bl_rows.iloc[0]
             burn_date = bl_row["Date"]
 
             # Load SMPS numConc for Bedroom 2 cross-check
@@ -1540,9 +1679,7 @@ def main() -> None:
                     print(f"  [{burn_id}] SMPS numConc not found for {burn_date.date()}")
 
             print(f"  Analysing {burn_id}...")
-            result = analyze_burn_instrument(
-                burn_id, instrument, df_aerotrak, bl_row, df_smps
-            )
+            result = analyze_burn_instrument(burn_id, instrument, df_aerotrak, bl_row, df_smps)
             if result is None:
                 continue
 

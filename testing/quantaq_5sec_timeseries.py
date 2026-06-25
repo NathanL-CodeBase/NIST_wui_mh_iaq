@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-QuantAQ MODULAIR-PM 5 Hz Time Series by Burn
+QuantAQ MODULAIR-PM 5 s Time Series by Burn
 =============================================
 
 Generates one interactive Bokeh HTML figure per burn (burns 4-10) from the
-5 Hz SD-card data logged by the two QuantAQ MODULAIR-PM sensors deployed in
+5 s SD-card data logged by the two QuantAQ MODULAIR-PM sensors deployed in
 the WUI manufactured-home smoke experiments.
 
 Each HTML file contains two stacked panels (kitchen on top, bedroom on bottom)
@@ -27,7 +27,7 @@ Data Quality Flags (bitmask in 'flag' column — values can be summed):
     Example: flag = 6 → bit 2 (OPC Fault) AND bit 4 (Neph Fault) simultaneously.
 
 Methodology:
-    1. Load DATA_YYYYMMDD.csv from each sensor's path_5hz directory.
+    1. Load DATA_YYYYMMDD.csv from each sensor's path_5sec directory.
     2. Skip the 3-row device-header block; parse timestamp_iso as UTC.
     3. Convert UTC → EDT by applying a fixed -4 h offset.
     4. Apply per-sensor clock-correction shift (bedroom: -2.97 min; kitchen: 0).
@@ -36,10 +36,10 @@ Methodology:
        flags: each bit is tested independently via bitwise AND).
     7. Build Bokeh panels per sensor: flag bands → event lines → scatter markers.
     8. Stack panels with linked x-range; append metadata footer.
-    9. Save as HTML to output_figures/quantaq_5hz_timeseries/.
+    9. Save as HTML to output_figures/quantaq_5sec_timeseries/.
 
 Output Files:
-    - quantaq_5hz_burn4.html through quantaq_5hz_burn10.html
+    - quantaq_5sec_burn4.html through quantaq_5sec_burn10.html
 
 Interactive Tools per Panel:
     - Pan, box zoom, box select, lasso select, wheel zoom, crosshair, reset, save
@@ -161,7 +161,7 @@ PM_COLORS = [
 ]
 
 TOOLS = "pan,box_zoom,box_select,lasso_select,wheel_zoom,crosshair,reset,save"
-OUTPUT_SUBDIR = "quantaq_5hz_timeseries"
+OUTPUT_SUBDIR = "quantaq_5sec_timeseries"
 FIGURE_WIDTH = 1800
 PANEL_HEIGHT = 600
 MARKER_SIZE = 3
@@ -173,19 +173,19 @@ MARKER_ALPHA = 0.60
 # ============================================================================
 
 
-def get_sensor_5hz_path(config_key):
-    """Return the path_5hz directory for an instrument key from data_config.json.
+def get_sensor_5sec_path(config_key):
+    """Return the path_5sec directory for an instrument key from data_config.json.
 
     Parameters:
         config_key (str): Key under 'instruments' in data_config.json.
 
     Returns:
-        Path: Resolved path to the 5 Hz SD-card data directory.
+        Path: Resolved path to the 5 s SD-card data directory.
     """
     instr = resolver.config.get("instruments", {}).get(config_key, {})
-    raw = instr.get("path_5hz")
+    raw = instr.get("path_5sec")
     if raw is None:
-        raise KeyError(f"No 'path_5hz' key for instrument '{config_key}' in data_config.json.")
+        raise KeyError(f"No 'path_5sec' key for instrument '{config_key}' in data_config.json.")
     return Path(raw)
 
 
@@ -259,7 +259,7 @@ def prepare_pm_data(df_raw, time_shift_min, garage_time):
     return df.loc[in_window].copy()
 
 
-def load_5hz_data(sensor_path, burn_date):
+def load_5sec_data(sensor_path, burn_date):
     """Load the DATA_YYYYMMDD.csv file for a given burn date.
 
     The CSV has a 3-row device-header block (deviceModel, deviceID, deviceSN)
@@ -296,7 +296,7 @@ def prepare_sensor_data(df_raw, time_shift_min, garage_time):
     which are already in local (EDT) time.
 
     Parameters:
-        df_raw (pd.DataFrame): Raw 5 Hz data from load_5hz_data().
+        df_raw (pd.DataFrame): Raw 5 s data from load_5sec_data().
         time_shift_min (float): Instrument clock correction in minutes.
         garage_time (pd.Timestamp): Garage-closed reference time (local EDT).
 
@@ -899,9 +899,9 @@ def main():
     ``data_config.json``. They are prepared with ``prepare_pm_data`` and passed to
     the panel builder as ``pm_df``.
     """
-    """Load 5 Hz data, build per-burn two-panel Bokeh figures, save HTML."""
+    """Load 5 s data, build per-burn two-panel Bokeh figures, save HTML."""
     print("\n" + "=" * 70)
-    print("QuantAQ MODULAIR-PM 5 Hz Time Series  —  Burns 4–10")
+    print("QuantAQ MODULAIR-PM 5 s Time Series  —  Burns 4–10")
     print("=" * 70)
 
     burn_log = load_burn_log(get_common_file("burn_log"))
@@ -909,11 +909,11 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output directory: {output_dir}\n")
 
-    # Resolve 5 Hz data paths from data_config.json
+    # Resolve 5 s data paths from data_config.json
     sensor_paths = {}
     for sensor, cfg in SENSOR_CONFIG.items():
         try:
-            sensor_paths[sensor] = get_sensor_5hz_path(cfg["config_key"])
+            sensor_paths[sensor] = get_sensor_5sec_path(cfg["config_key"])
         except KeyError as exc:
             print(f"  [WARNING] {exc}")
 
@@ -937,7 +937,7 @@ def main():
                 flag_spans_by_sensor[sensor] = {}
                 continue
 
-            df_raw = load_5hz_data(path, timing["burn_date"])
+            df_raw = load_5sec_data(path, timing["burn_date"])
             df = prepare_sensor_data(df_raw, cfg["time_shift_min"], timing["garage_time"])
             data_by_sensor[sensor] = df
 
@@ -976,8 +976,8 @@ def main():
             burn_id, data_by_sensor, pm_data_by_sensor, timing, flag_spans_by_sensor, flag_meta_str
         )
 
-        out_path = output_dir / f"quantaq_5hz_{burn_id}.html"
-        output_file(str(out_path), title=f"QuantAQ 5Hz {burn_id}")
+        out_path = output_dir / f"quantaq_5sec_{burn_id}.html"
+        output_file(str(out_path), title=f"QuantAQ 5 s {burn_id}")
         save(layout)
         print(f"  Saved → {out_path.name}\n")
 

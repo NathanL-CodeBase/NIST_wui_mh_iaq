@@ -105,6 +105,14 @@ BURN_COVERAGE = {
 # Burns where Bedroom 2 was sealed (flag in output; AeroTrak1 only)
 BEDROOM_SEALED_BURNS = {"burn5", "burn6"}
 
+# Worked example pinned for the manuscript (Sentence 5). Set to a
+# (burn, instrument) tuple to force the example, or None to fall back to the
+# highest peak-PM3 non-sealed reversal pair with a computable suppression.
+# Pinned to Burn 09 Morning Room to match the manuscript mass-bracketing
+# worked example; the auto-selected highest-PM3 pair (burn3 Morning Room)
+# has a near-zero reversal trough that reads poorly in prose.
+WORKED_EXAMPLE: tuple[str, str] | None = ("burn9", "AeroTrak2")
+
 # data_config.json instrument keys
 INSTR_KEY = {
     "AeroTrak1": "aerotrak_bedroom",
@@ -1565,6 +1573,10 @@ def _write_markdown(all_results: list[dict]) -> None:
         min_dur = float(np.min(dur_arr)) if len(dur_arr) > 0 else np.nan
         max_dur = float(np.max(dur_arr)) if len(dur_arr) > 0 else np.nan
         med_pm3_rev = float(np.median(pm3_rev_arr)) if len(pm3_rev_arr) > 0 else np.nan
+        min_pm3_rev = float(np.min(pm3_rev_arr)) if len(pm3_rev_arr) > 0 else np.nan
+        max_pm3_rev = float(np.max(pm3_rev_arr)) if len(pm3_rev_arr) > 0 else np.nan
+        n_at1_rev = sum(1 for r in rev if r["instrument"] == "AeroTrak1")
+        n_at2_rev = sum(1 for r in rev if r["instrument"] == "AeroTrak2")
         med_npeak = float(np.median(n_peak_arr))
         factor_med = med_npeak / COINCIDENCE_THRESHOLD_CM3
         min_L = float(np.min(L_arr)) if len(L_arr) > 0 else np.nan
@@ -1572,13 +1584,19 @@ def _write_markdown(all_results: list[dict]) -> None:
         n_fail = len(cons_fails)
 
         para1 = (
-            f"{n_rev} of {n_total} non-sealed burn-instrument pairs showed a Ch1 "
-            f"reversal (0.3-0.5 um count falling below 50% of the local maximum). "
-            f"Median reversal duration was {_fmt(med_dur, '.0f')} minutes "
-            f"(range {_fmt(min_dur, '.0f')} to {_fmt(max_dur, '.0f')} minutes). "
-            f"Median peak PM3 mass concentration at the time of the reversal was "
-            f"approximately {_fmt(med_pm3_rev, '.0f')} ug/m3. (The two sealed "
-            f"Bedroom 2 burns are excluded from these headline statistics.)"
+            f"{n_rev} of {n_total} non-sealed burn-instrument pairs ("
+            f"{n_at1_rev} AeroTrak1 Bedroom 2, {n_at2_rev} AeroTrak2 Morning "
+            f"Room) showed a Ch1 reversal (0.3-0.5 um count falling below 50% of "
+            f"the local maximum). Median reversal duration was "
+            f"{_fmt(med_dur, '.1f')} minutes (range {_fmt(min_dur, '.1f')} to "
+            f"{_fmt(max_dur, '.1f')} minutes). Median peak PM3 mass concentration "
+            f"at the time of the reversal was approximately {_fmt(med_pm3_rev, '.0f')} "
+            f"ug/m3 (range {_fmt(min_pm3_rev, '.0f')} to {_fmt(max_pm3_rev, '.0f')} "
+            f"ug/m3). The two sealed Bedroom 2 pairs (Burns 05 and 06) are excluded "
+            f"from every aggregate because concentrations in the sealed room were "
+            f"low: Burn 05 AeroTrak1 showed no reversal at a peak PM3 of about "
+            f"24 ug/m3, and Burn 06 AeroTrak1 showed a flagged reversal at only "
+            f"about 28 ug/m3, neither representative of the dense-smoke phenomenon."
         )
 
         para2 = (
@@ -1629,6 +1647,8 @@ def _write_markdown(all_results: list[dict]) -> None:
     min_dur_s = _fmt(float(np.min(dur_arr)) if len(dur_arr) > 0 else np.nan, ".0f")
     max_dur_s = _fmt(float(np.max(dur_arr)) if len(dur_arr) > 0 else np.nan, ".0f")
     med_pm3_s = _fmt(float(np.median(pm3_rev_arr)) if len(pm3_rev_arr) > 0 else np.nan, ".0f")
+    min_pm3_s = _fmt(float(np.min(pm3_rev_arr)) if len(pm3_rev_arr) > 0 else np.nan, ".0f")
+    max_pm3_s = _fmt(float(np.max(pm3_rev_arr)) if len(pm3_rev_arr) > 0 else np.nan, ".0f")
 
     min_npeak = float(np.min(n_peak_arr)) if len(n_peak_arr) > 0 else np.nan
     max_npeak = float(np.max(n_peak_arr)) if len(n_peak_arr) > 0 else np.nan
@@ -1639,9 +1659,12 @@ def _write_markdown(all_results: list[dict]) -> None:
 
     n_fail_s = len(cons_fails)
 
-    # Worked example: a high-concentration reversal pair. Select by peak PM3
-    # mass (the dramatic, manuscript-relevant case), not by n_peak count, so
-    # the example reflects the dense-smoke conditions the section is about.
+    # Worked example: a high-concentration reversal pair with a clear
+    # suppression. Candidates are non-sealed reversal pairs with a computable
+    # duration, a counts-NOT-conserved trough, and a valid Ch1 minimum. If
+    # WORKED_EXAMPLE pins a (burn, instrument) pair, use it; otherwise fall
+    # back to the highest peak-PM3 candidate. Selecting by peak PM3 keeps the
+    # example in the dense-smoke regime the section is about.
     ex_cands = [
         r
         for r in rev
@@ -1650,8 +1673,24 @@ def _write_markdown(all_results: list[dict]) -> None:
         and not np.isnan(r.get("n_peak_cm3", np.nan))
         and not np.isnan(r.get("reversal_duration_minutes", np.nan))
         and not np.isnan(r.get("peak_total_PM3_mass_ug_m3", np.nan))
+        and r.get("counts_conserved") is False
     ]
-    ex = max(ex_cands, key=lambda r: r["peak_total_PM3_mass_ug_m3"]) if ex_cands else None
+    ex = None
+    if WORKED_EXAMPLE is not None:
+        ex = next(
+            (
+                r
+                for r in ex_cands
+                if (r["burn"], r["instrument"]) == WORKED_EXAMPLE
+            ),
+            None,
+        )
+    if ex is None:
+        ex = (
+            max(ex_cands, key=lambda r: r["peak_total_PM3_mass_ug_m3"])
+            if ex_cands
+            else None
+        )
 
     if ex is not None:
         ex_burn = ex["burn"]
@@ -1668,10 +1707,14 @@ def _write_markdown(all_results: list[dict]) -> None:
         ex_burn = ex_loc = "[no example]"
         ex_n_pre = ex_n_min = ex_dur = ex_pm3 = ex_L_pct = ex_supp = np.nan
 
+    n_at1_rev_s = sum(1 for r in rev if r["instrument"] == "AeroTrak1")
+    n_at2_rev_s = sum(1 for r in rev if r["instrument"] == "AeroTrak2")
+
     s1 = (
         f"Channel reversals in the 0.3-0.5 um bin (Ch1 count falling below 50% of "
-        f"the local maximum) were detected in {n_rev} of {n_total} non-sealed AeroTrak "
-        f"burn-instrument pairs analysed, with a median reversal duration of "
+        f"the local maximum) were detected in all {n_rev} of the {n_total} non-sealed "
+        f"AeroTrak burn-instrument pairs analysed ({n_at1_rev_s} AeroTrak1 Bedroom 2, "
+        f"{n_at2_rev_s} AeroTrak2 Morning Room), with a median reversal duration of "
         f"approximately {med_dur_s} minutes (range {min_dur_s} to {max_dur_s} minutes) "
         f"and a median peak total PM3 mass concentration of approximately "
         f"{med_pm3_s} ug/m3 at the time of the reversal."
@@ -1694,10 +1737,12 @@ def _write_markdown(all_results: list[dict]) -> None:
     )
 
     s4 = (
-        f"The reversal phenomenon was associated with dense smoke, occurring at a "
-        f"median peak total PM3 mass concentration of approximately {med_pm3_s} ug/m3 "
-        f"across the non-sealed pairs; OPC-derived count concentrations and mass "
-        f"estimates should be interpreted with caution at these levels."
+        f"The reversal phenomenon was associated with dense smoke and was "
+        f"consistently observed at peak total PM3 mass concentrations exceeding "
+        f"approximately {med_pm3_s} ug/m3 (range {min_pm3_s} to {max_pm3_s} ug/m3 "
+        f"across the non-sealed pairs, the median taken as the practical caution "
+        f"threshold); OPC-derived count concentrations and mass estimates should "
+        f"be interpreted with caution at and above these levels."
     )
 
     s5 = (

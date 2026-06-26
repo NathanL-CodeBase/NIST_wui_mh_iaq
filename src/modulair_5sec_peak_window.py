@@ -48,6 +48,7 @@ _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
 from src.data_paths import get_common_file  # noqa: E402
 from src.modulair_5sec_io import (  # noqa: E402
+    BEDROOM_SEALED_BURNS,
     BURN_DATES,
     NEPH_BINS,
     OPC_BIN_EDGES_UM,
@@ -89,14 +90,24 @@ MIN_SAT_SAMPLES = 6      # >= 6 samples (30 s) to call it a real plateau
 # neph_bin0 at the 16-bit ceiling (all MODULAIR-PM1 records and burn8
 # MODULAIR-PM2). Without a window these records yield no t_peak_end, so the
 # OPC ratios and the Prompt-4 cross-reference cannot be computed. The fallback
-# window is the contiguous block where neph_bin0 sits within FALLBACK_PEAK_FRAC
-# of the record's own neph_bin0 maximum, provided that maximum is a genuine
-# smoke excursion (>= FALLBACK_MIN_PEAK above the pre-burn baseline) and the
-# block spans at least MIN_SAT_SAMPLES. Saturated records always use the
-# ceiling-based window above; the fallback only fires when SAT detection fails.
-FALLBACK_PEAK_FRAC = 0.90    # within 90 % of the per-record neph_bin0 maximum
-FALLBACK_MIN_PEAK = 1000.0   # neph_bin0 max must exceed baseline by this much
-FALLBACK_GAP_SAMPLES = 6     # bridge dips of up to this many samples (30 s)
+# window is defined independently of the nephelometer, in priority order:
+#   (a) the burn-log peak interval: from max(garage closure, ignition) to PAC
+#       activation (the physical dense-smoke period before air cleaning);
+#   (b) the co-located AeroTrak PM3 peak time +/- the median saturated-window
+#       half-width;
+#   (c) the OPC-N3 total-count peak +/- the same half-width.
+# Saturated records always use the ceiling-based window above; the fallback
+# only fires when SAT detection fails. peak_window_method records which path
+# produced the window: "neph_saturation" | "fallback_burnlog" |
+# "fallback_aerotrak" | "fallback_opc".
+FALLBACK_HALF_WIDTH_FLOOR_MIN = 2.5   # min half-width if no saturated median yet
+
+# burn8 MODULAIR-PM2 near-saturation diagnostic / relaxed-saturation test. The
+# detector's exact-ceiling test (SAT_FRAC = 1.0) is the primary saturation
+# rule. If a record approaches but never reaches the exact ceiling, a relaxed
+# test (neph_bin0 >= NEAR_SAT_FRAC * NEPH_CEILING for >= MIN_SAT_SAMPLES) is
+# evaluated for the diagnostic print only; it does not reclassify the record.
+NEAR_SAT_FRAC = 0.98
 
 # OPC-N3 three smallest bins used for the suppression classification.
 OPC_SMALL_BINS = ["bin0", "bin1", "bin2"]
@@ -108,8 +119,17 @@ BASELINE_MIN = 30
 # bin1/bin2 pre-fire baselines sit near zero (~0.01-0.08 counts), so a peak/pre
 # ratio divides by a tiny denominator and explodes to implausible values
 # (hundreds to thousands). Ratios built on a baseline below this floor are not
-# meaningful and are returned as NaN ("no_data") rather than reported.
+# meaningful and are returned as NaN; the classification then falls back to the
+# absolute peak count (see MIN_PEAK_COUNT_ELEVATED).
 MIN_BASELINE_FOR_RATIO = 0.5
+
+# Absolute peak count (median over the peak window) above which a bin whose
+# pre-fire baseline was below MIN_BASELINE_FOR_RATIO is classified as
+# "elevated_from_zero": it rose from a near-zero baseline to a real count, a
+# genuine increase that the ratio cannot quantify without a div-by-zero
+# artifact. Set from the data: bin1/bin2 peak medians in the dense-smoke
+# records reach tens to hundreds of counts, well above this floor.
+MIN_PEAK_COUNT_ELEVATED = 1.0
 
 # Bin-response classification thresholds (peak/pre ratio).
 SUPPRESSED_MAX = 0.5     # ratio < 0.5  -> suppressed
@@ -138,7 +158,14 @@ UNIT_COLOR = {"MODULAIR-PM1": "#003f5c", "MODULAIR-PM2": "#ef5675"}
 # ==============================================================================
 
 
-def _detect_peak_window(df: pd.DataFrame, ignition: pd.Timestamp = pd.NaT) -> dict:
+def _detect_peak_window(
+    df: pd.DataFrame,
+    ignition: pd.Timestamp = pd.NaT,
+    garage: pd.Timestamp = pd.NaT,
+    pac_on: pd.Timestamp = pd.NaT,
+    aerotrak_t_peak: pd.Timestamp = pd.NaT,
+    sat_half_width_min: float = np.nan,
+) -> dict:
     """
     Define the peak window for one burn-unit record.
 
@@ -148,35 +175,43 @@ def _detect_peak_window(df: pd.DataFrame, ignition: pd.Timestamp = pd.NaT) -> di
        (>= SAT_FRAC * NEPH_CEILING) for at least MIN_SAT_SAMPLES samples, the
        window runs from the first ceiling sample to the first sample on the
        recovery side that drops below RECOVERY_FRAC of the plateau value.
-       'saturated' is True and 'window_kind' is "saturation".
+       'saturated' is True and 'peak_window_method' is "neph_saturation".
 
-    2. Fallback (near-ceiling). Records that carry smoke but never pin
+    2. Fallback (non-saturating). Records that carry smoke but never pin
        neph_bin0 at the ceiling still need a window so the OPC ratios and the
-       Prompt-4 cross-reference can be computed. When the record's neph_bin0
-       maximum is a genuine smoke excursion (>= FALLBACK_MIN_PEAK above the
-       pre-burn baseline), the window is the contiguous block where neph_bin0
-       sits within FALLBACK_PEAK_FRAC of that maximum (bridging dips up to
-       FALLBACK_GAP_SAMPLES). 'saturated' stays False and 'window_kind' is
-       "near_ceiling". 'plateau_value' carries the neph_bin0 maximum for these
+       Prompt-4 cross-reference can be computed. The fallback window is defined
+       independently of the nephelometer, in priority order:
+         (a) burn-log peak interval: max(garage, ignition) -> pac_on
+             ('peak_window_method' = "fallback_burnlog");
+         (b) AeroTrak PM3 peak +/- sat_half_width_min
+             ('peak_window_method' = "fallback_aerotrak");
+         (c) OPC-N3 total-count peak +/- sat_half_width_min
+             ('peak_window_method' = "fallback_opc").
+       'saturated' stays False. The window is clipped to the record's own time
+       span. 'plateau_value' carries the in-window neph_bin0 maximum for these
        records (not a fixed ceiling).
 
     Parameters
     ----------
     df : pd.DataFrame
         5 s record for one burn-unit pair (local time), with 'neph_bin0'.
-    ignition : pd.Timestamp
-        Ignition time; used only to anchor the fallback pre-burn baseline.
+    ignition, garage, pac_on : pd.Timestamp
+        Burn-log event times for the fallback burn-log interval (a).
+    aerotrak_t_peak : pd.Timestamp
+        Co-located AeroTrak PM3 peak time for fallback (b).
+    sat_half_width_min : float
+        Median saturated-window half-width (minutes) for fallbacks (b)/(c).
 
     Returns
     -------
     dict
-        Keys: saturated (bool), window_kind (str), t_peak_start, t_peak_end
-        (pd.Timestamp/NaT), plateau_value (float),
+        Keys: saturated (bool), peak_window_method (str), t_peak_start,
+        t_peak_end (pd.Timestamp/NaT), plateau_value (float),
         peak_window_duration_seconds/_minutes (float), n_sat_samples (int).
     """
     blank = dict(
         saturated=False,
-        window_kind="none",
+        peak_window_method="none",
         t_peak_start=pd.NaT,
         t_peak_end=pd.NaT,
         plateau_value=np.nan,
@@ -214,7 +249,7 @@ def _detect_peak_window(df: pd.DataFrame, ignition: pd.Timestamp = pd.NaT) -> di
 
         return dict(
             saturated=True,
-            window_kind="saturation",
+            peak_window_method="neph_saturation",
             t_peak_start=t_start,
             t_peak_end=t_end,
             plateau_value=plateau,
@@ -223,71 +258,67 @@ def _detect_peak_window(df: pd.DataFrame, ignition: pd.Timestamp = pd.NaT) -> di
             n_sat_samples=int(sat_mask.sum()),
         )
 
-    # --- Fallback: near-ceiling window for an unsaturated smoke record --------
-    arr = nb0.to_numpy(dtype=float)
-    if not np.isfinite(arr).any():
+    # --- Fallback window for a non-saturating record --------------------------
+    rec_lo = pd.Timestamp(ts.iloc[0])
+    rec_hi = pd.Timestamp(ts.iloc[-1])
+    half = (
+        pd.Timedelta(minutes=sat_half_width_min)
+        if np.isfinite(sat_half_width_min) and sat_half_width_min > 0
+        else pd.Timedelta(minutes=FALLBACK_HALF_WIDTH_FLOOR_MIN)
+    )
+
+    method = None
+    t_start = t_end = pd.NaT
+
+    # (a) burn-log peak interval: max(garage, ignition) -> pac_on.
+    peak_lo = pd.NaT
+    if pd.notna(garage) and pd.notna(ignition):
+        peak_lo = max(garage, ignition)
+    elif pd.notna(ignition):
+        peak_lo = ignition
+    elif pd.notna(garage):
+        peak_lo = garage
+    if pd.notna(peak_lo) and pd.notna(pac_on) and pac_on > peak_lo:
+        t_start, t_end, method = peak_lo, pac_on, "fallback_burnlog"
+    # (b) AeroTrak PM3 peak +/- half-width.
+    elif pd.notna(aerotrak_t_peak):
+        t_start = aerotrak_t_peak - half
+        t_end = aerotrak_t_peak + half
+        method = "fallback_aerotrak"
+    # (c) OPC-N3 total-count peak +/- half-width.
+    else:
+        opc_cols = [c for c in OPC_BINS if c in df.columns]
+        if opc_cols:
+            total = df[opc_cols].apply(pd.to_numeric, errors="coerce").sum(axis=1)
+            if total.notna().any():
+                t_opc = pd.Timestamp(ts.iloc[int(total.values.argmax())])
+                t_start = t_opc - half
+                t_end = t_opc + half
+                method = "fallback_opc"
+
+    if method is None or pd.isna(t_start) or pd.isna(t_end):
         return blank
-    nb0_max = float(np.nanmax(arr))
 
-    baseline = 0.0
-    if pd.notna(ignition):
-        pre = ((ts >= ignition - pd.Timedelta(minutes=BASELINE_MIN)) & (ts < ignition)).to_numpy()
-        if pre.any() and np.isfinite(arr[pre]).any():
-            baseline = float(np.nanmean(arr[pre]))
-    if nb0_max - baseline < FALLBACK_MIN_PEAK:
-        return blank  # no genuine smoke excursion
-
-    thresh = FALLBACK_PEAK_FRAC * nb0_max
-    near = arr >= thresh
-    if near.sum() < MIN_SAT_SAMPLES:
+    # Clip the window to the record's own time span.
+    t_start = max(t_start, rec_lo)
+    t_end = min(t_end, rec_hi)
+    if t_end <= t_start:
         return blank
 
-    # Contiguous block around the global maximum, bridging short dips so a
-    # noisy plateau is not split into many tiny segments.
-    peak_i = int(np.nanargmax(arr))
-    start_i = peak_i
-    gap = 0
-    while start_i > 0:
-        if near[start_i - 1]:
-            start_i -= 1
-            gap = 0
-        elif gap < FALLBACK_GAP_SAMPLES:
-            start_i -= 1
-            gap += 1
-        else:
-            break
-    # Trim leading bridged-but-below samples back to a near-threshold sample.
-    while start_i < peak_i and not near[start_i]:
-        start_i += 1
-
-    end_i = peak_i
-    gap = 0
-    n = len(arr)
-    while end_i < n - 1:
-        if near[end_i + 1]:
-            end_i += 1
-            gap = 0
-        elif gap < FALLBACK_GAP_SAMPLES:
-            end_i += 1
-            gap += 1
-        else:
-            break
-    while end_i > peak_i and not near[end_i]:
-        end_i -= 1
-
-    t_start = pd.Timestamp(ts.iloc[start_i])
-    t_end = pd.Timestamp(ts.iloc[end_i])
+    in_win = (ts >= t_start) & (ts <= t_end)
+    nb0_in = nb0[in_win]
+    plateau_val = float(np.nanmax(nb0_in.to_numpy())) if nb0_in.notna().any() else np.nan
     dur_s = (t_end - t_start).total_seconds()
 
     return dict(
         saturated=False,
-        window_kind="near_ceiling",
+        peak_window_method=method,
         t_peak_start=t_start,
         t_peak_end=t_end,
-        plateau_value=nb0_max,
+        plateau_value=plateau_val,
         peak_window_duration_seconds=float(dur_s),
         peak_window_duration_minutes=float(dur_s / 60.0),
-        n_sat_samples=int(near.sum()),
+        n_sat_samples=int(in_win.sum()),
     )
 
 
@@ -417,14 +448,32 @@ def _portal_qaqc_window(
 # ==============================================================================
 
 
-def _classify_ratio(ratio: float) -> str:
-    """Classify a peak/pre bin ratio as suppressed / unchanged / elevated."""
-    if np.isnan(ratio):
+def _classify_bin(
+    ratio: float, pre_count: float, peak_count: float
+) -> str:
+    """
+    Classify a bin's peak-window response robustly against a near-zero baseline.
+
+    When the pre-fire baseline is at or above MIN_BASELINE_FOR_RATIO the ratio
+    is meaningful and drives the class (suppressed / unchanged / elevated). When
+    the baseline is below that floor the ratio is a division-by-zero artifact;
+    the class then comes from the absolute peak count: a peak median above
+    MIN_PEAK_COUNT_ELEVATED is "elevated_from_zero" (rose from a near-zero
+    baseline), otherwise "unchanged".
+    """
+    if np.isfinite(pre_count) and pre_count >= MIN_BASELINE_FOR_RATIO:
+        if np.isnan(ratio):
+            return "no_data"
+        if ratio < SUPPRESSED_MAX:
+            return "suppressed"
+        if ratio > ELEVATED_MIN:
+            return "elevated"
+        return "unchanged"
+    # Near-zero baseline: classify on the absolute peak count instead.
+    if not np.isfinite(peak_count):
         return "no_data"
-    if ratio < SUPPRESSED_MAX:
-        return "suppressed"
-    if ratio > ELEVATED_MIN:
-        return "elevated"
+    if peak_count > MIN_PEAK_COUNT_ELEVATED:
+        return "elevated_from_zero"
     return "unchanged"
 
 
@@ -436,34 +485,39 @@ def _opc_response(
     saturated: bool,
 ) -> dict:
     """
-    Compute peak/pre-baseline ratios and classifications for all OPC-N3 bins.
+    Compute peak/pre-baseline ratios, absolute counts, and classifications for
+    all OPC-N3 bins.
 
     The pre-burn baseline is the BASELINE_MIN minutes immediately before
     ignition (mean bin count). The peak level is the MEDIAN bin count over the
     peak samples. For a saturated record the peak samples are the
     saturated-plateau samples only (neph_bin0 >= SAT_FRAC * NEPH_CEILING): the
     rising edge inflates a window mean and would mask the small-bin collapse
-    that occurs once the nephelometer is pinned. For a fallback (near-ceiling)
-    window there is no plateau, so the peak samples are simply all samples in
-    [t_peak_start, t_peak_end].
+    that occurs once the nephelometer is pinned. For a fallback window there is
+    no plateau, so the peak samples are all samples in [t_peak_start,
+    t_peak_end].
 
     Bin ratios are only reported when the pre-burn baseline exceeds
     MIN_BASELINE_FOR_RATIO; the OPC-N3 bin1/bin2 baselines sit near zero, so a
     ratio against them divides by a tiny denominator and explodes. Such ratios
-    are returned as NaN ("no_data") rather than as spurious thousands-fold
-    "elevated" values. Ratios for the three smallest bins are returned
-    individually; all 24 bins are returned for the SI bin-response grid.
+    are returned as NaN, and the classification falls back to the absolute peak
+    count (see _classify_bin), so a bin that rose from a near-zero baseline is
+    reported as "elevated_from_zero" rather than as a spurious thousands-fold
+    ratio. The absolute pre/peak counts are returned for the three smallest
+    bins so the manuscript can cite the count change directly.
 
     Returns
     -------
     dict
-        ratio_bin{i}, class_bin{i} for the three smallest bins, plus
-        'all_ratios' (list aligned with OPC_BINS) for the grid figure.
+        ratio_bin{i}, class_bin{i}, pre_count_bin{i}, peak_count_bin{i} for the
+        three smallest bins, plus 'all_ratios' (list aligned with OPC_BINS).
     """
     out: dict = {"all_ratios": [np.nan] * len(OPC_BINS)}
     for b in OPC_SMALL_BINS:
         out[f"ratio_{b}"] = np.nan
         out[f"class_{b}"] = "no_data"
+        out[f"pre_count_{b}"] = np.nan
+        out[f"peak_count_{b}"] = np.nan
     if df is None or df.empty or pd.isna(ignition):
         return out
     if pd.isna(t_peak_start) or pd.isna(t_peak_end):
@@ -477,7 +531,7 @@ def _opc_response(
         nb0 = pd.to_numeric(df["neph_bin0"], errors="coerce")
         peak_mask = in_window & (nb0 >= SAT_FRAC * NEPH_CEILING)
     else:
-        # Fallback near-ceiling window: no plateau, use all in-window samples.
+        # Fallback window: no plateau, use all in-window samples.
         peak_mask = in_window
     if pre_mask.sum() == 0 or peak_mask.sum() == 0:
         return out
@@ -498,7 +552,9 @@ def _opc_response(
         out["all_ratios"][i] = ratio
         if b in OPC_SMALL_BINS:
             out[f"ratio_{b}"] = ratio
-            out[f"class_{b}"] = _classify_ratio(ratio)
+            out[f"pre_count_{b}"] = pre_mean
+            out[f"peak_count_{b}"] = peak_med
+            out[f"class_{b}"] = _classify_bin(ratio, pre_mean, peak_med)
     return out
 
 
@@ -564,6 +620,7 @@ def _aerotrak_for_pair(at: pd.DataFrame | None, burn_id: str, unit: str) -> dict
         aerotrak_reversal_onset=pd.NaT,
         aerotrak_t_min=pd.NaT,
         aerotrak_reversal_end=pd.NaT,
+        aerotrak_t_peak=pd.NaT,
     )
     if at is None:
         return out
@@ -577,7 +634,8 @@ def _aerotrak_for_pair(at: pd.DataFrame | None, burn_id: str, unit: str) -> dict
     out["aerotrak_reversal_present"] = bool(rev) if pd.notna(rev) else np.nan
     for src, dst in (("reversal_onset", "aerotrak_reversal_onset"),
                      ("t_min", "aerotrak_t_min"),
-                     ("reversal_end", "aerotrak_reversal_end")):
+                     ("reversal_end", "aerotrak_reversal_end"),
+                     ("t_peak", "aerotrak_t_peak")):
         if src in row.columns and pd.notna(r.get(src)):
             out[dst] = pd.to_datetime(r[src], errors="coerce")
     return out
@@ -588,11 +646,46 @@ def _aerotrak_for_pair(at: pd.DataFrame | None, burn_id: str, unit: str) -> dict
 # ==============================================================================
 
 
+def _saturation_diagnostic(df: pd.DataFrame, burn_id: str, unit: str,
+                           peak_lo: pd.Timestamp, peak_hi: pd.Timestamp) -> None:
+    """
+    Print the per-record near-saturation diagnostic (FIX B2).
+
+    Reports the neph_bin0 maximum and its timestamp, the count of samples at or
+    above the exact ceiling and within NEAR_SAT_FRAC of it, the 5 s record time
+    range, and whether the record covers the burn-log peak interval (to detect a
+    data gap over the peak). Diagnostic only; it does not reclassify the record.
+    """
+    if df is None or df.empty or "neph_bin0" not in df.columns:
+        return
+    nb0 = pd.to_numeric(df["neph_bin0"], errors="coerce")
+    ts = df["timestamp"]
+    mx = float(np.nanmax(nb0.to_numpy()))
+    t_mx = pd.Timestamp(ts.iloc[int(nb0.values.argmax())])
+    n_ceiling = int((nb0 >= NEPH_CEILING).sum())
+    n_near = int((nb0 >= NEAR_SAT_FRAC * NEPH_CEILING).sum())
+    covers = "n/a"
+    if pd.notna(peak_lo) and pd.notna(peak_hi):
+        in_peak = ((ts >= peak_lo) & (ts <= peak_hi))
+        if in_peak.any():
+            gaps = ts[in_peak].diff().dt.total_seconds()
+            max_gap = float(gaps.max()) if gaps.notna().any() else 0.0
+            covers = f"yes (n={int(in_peak.sum())}, max gap {max_gap:.0f}s)"
+        else:
+            covers = "NO - data gap over peak interval"
+    print(
+        f"    [sat-diag] {burn_id} {unit}: neph_bin0 max {mx:.0f} at {t_mx}; "
+        f"n>=ceiling {n_ceiling}, n>=0.98*ceiling {n_near}; "
+        f"record {ts.iloc[0]}..{ts.iloc[-1]}; covers peak interval: {covers}"
+    )
+
+
 def analyze_pair(
     burn_id: str,
     unit: str,
     events: pd.DataFrame,
     at: pd.DataFrame | None,
+    sat_half_width_min: float = np.nan,
 ) -> dict:
     """
     Run the full peak-window analysis for one burn-unit pair.
@@ -601,6 +694,10 @@ def analyze_pair(
     '_') carrying the loaded frames and event times for the figure functions.
     A pair with no 5 s data is flagged via 'data_present' = False and skipped
     by the figure functions; it is never imputed.
+
+    sat_half_width_min is the median saturated-window half-width (minutes) used
+    by the AeroTrak/OPC fallback windows; pass NaN on the first pass (before any
+    saturated window is known) and the real value on the second pass.
     """
     burn_key = burn_id  # events index uses 'burn4' etc.
     ev = events.loc[burn_key] if burn_key in events.index else None
@@ -613,20 +710,36 @@ def analyze_pair(
         print(f"    [{burn_id}|{unit}] no 5 s data - flagged, not imputed.")
         return dict(
             burn=burn_id, unit=unit, location=UNIT_LOCATION[unit],
-            data_present=False, saturated=False, window_kind="none",
+            data_present=False, saturated=False, peak_window_method="none",
             notes="5 s data missing",
             _df=None, _portal=None, _ignition=ignition, _garage=garage,
             _pac_on=pac_on,
         )
 
     portal = load_portal_burn(unit, burn_id)
-    pw = _detect_peak_window(df, ignition)
+    atx = _aerotrak_for_pair(at, burn_id, unit)
+
+    # AeroTrak PM3 peak time for the fallback (b) anchor.
+    at_t_peak = atx.get("aerotrak_t_peak", pd.NaT)
+
+    pw = _detect_peak_window(
+        df, ignition, garage, pac_on, at_t_peak, sat_half_width_min
+    )
+
+    # Near-saturation diagnostic for every non-saturating record (FIX B2).
+    if not pw["saturated"]:
+        peak_lo = (
+            max(garage, ignition)
+            if pd.notna(garage) and pd.notna(ignition)
+            else (ignition if pd.notna(ignition) else garage)
+        )
+        _saturation_diagnostic(df, burn_id, unit, peak_lo, pac_on)
+
     qa = _portal_qaqc_window(portal, pw["t_peak_start"], pw["t_peak_end"], ignition)
     opc = _opc_response(
         df, ignition, pw["t_peak_start"], pw["t_peak_end"], pw["saturated"]
     )
     neph = _neph_plateau(df, pw["t_peak_start"], pw["t_peak_end"])
-    atx = _aerotrak_for_pair(at, burn_id, unit)
 
     # Cross-reference the MODULAIR-PM peak window against the full AeroTrak Ch1
     # reversal interval (onset -> recovery), not a single instant. Both
@@ -655,26 +768,36 @@ def analyze_pair(
         else:
             rev_gap_min = float((p0 - a1).total_seconds() / 60.0)
 
+    method = pw["peak_window_method"]
     if pw["saturated"]:
         notes = []
-    elif pw["window_kind"] == "near_ceiling":
-        notes = ["neph_bin0 did not saturate; near-ceiling fallback window used"]
+    elif method == "fallback_burnlog":
+        notes = ["neph_bin0 did not saturate; burn-log peak-interval fallback window used"]
+    elif method == "fallback_aerotrak":
+        notes = ["neph_bin0 did not saturate; AeroTrak-peak fallback window used"]
+    elif method == "fallback_opc":
+        notes = ["neph_bin0 did not saturate; OPC-peak fallback window used"]
     else:
-        notes = ["neph_bin0 did not reach plateau; no peak window"]
+        notes = ["neph_bin0 did not saturate; no peak window could be defined"]
+    # Flag the sealed low-concentration Bedroom 2 records: they get a window so
+    # Prompt 4 can run, but the co-located AeroTrak PM3 shows no real smoke.
+    if unit == "MODULAIR-PM1" and burn_id in BEDROOM_SEALED_BURNS:
+        notes.append("sealed bedroom, low concentration (not a dense-smoke case)")
     if portal is None:
         notes.append("portal product missing")
 
     rec = dict(
         burn=burn_id, unit=unit, location=UNIT_LOCATION[unit],
         data_present=True, portal_present=portal is not None,
+        bedroom_sealed=(unit == "MODULAIR-PM1" and burn_id in BEDROOM_SEALED_BURNS),
         **{k: pw[k] for k in (
-            "saturated", "window_kind", "t_peak_start", "t_peak_end",
+            "saturated", "peak_window_method", "t_peak_start", "t_peak_end",
             "plateau_value", "peak_window_duration_seconds",
             "peak_window_duration_minutes", "n_sat_samples")},
         **qa,
         **{k: opc[k] for k in opc if k != "all_ratios"},
         **neph,
-        **atx,
+        **{k: v for k, v in atx.items() if k != "aerotrak_t_peak"},
         aerotrak_reversal_overlap_fraction=rev_overlap_frac,
         aerotrak_reversal_gap_minutes=rev_gap_min,
         notes="; ".join(notes),
@@ -898,8 +1021,8 @@ def _mpl_qaqc_overlap(results: list[dict]) -> None:
     """
     Grouped bar chart per burn-unit pair: peak_window_duration vs
     portal_qaqc_removal_duration (both minutes). Every pair with a peak window
-    (saturation or near-ceiling fallback) and a portal product is shown;
-    near-ceiling pairs are hatched to distinguish them from saturated pairs.
+    (saturation or fallback) and a portal product is shown; fallback-windowed
+    pairs are hatched to distinguish them from saturated pairs.
     """
     rows = [
         r for r in results
@@ -943,7 +1066,7 @@ def _mpl_qaqc_overlap(results: list[dict]) -> None:
     handles = [
         Patch(color="#1f77b4", alpha=0.85, label="5 s peak window (saturated)"),
         Patch(facecolor="#1f77b4", alpha=0.85, hatch="///",
-              label="5 s peak window (near-ceiling)"),
+              label="5 s peak window (fallback)"),
         Patch(color="#ff7f0e", alpha=0.85, label="Portal QA/QC removal"),
     ]
     ax.legend(handles=handles, fontsize=TEXT_CONFIG["legendsize"])
@@ -962,16 +1085,17 @@ def _mpl_qaqc_overlap(results: list[dict]) -> None:
 
 # Per-burn CSV column order (one row per burn-unit pair).
 _PER_BURN_COLS = [
-    "burn", "unit", "location", "data_present", "portal_present", "saturated",
-    "window_kind",
+    "burn", "unit", "location", "bedroom_sealed", "data_present",
+    "portal_present", "saturated", "peak_window_method",
     "t_peak_start", "t_peak_end", "plateau_value",
     "peak_window_duration_seconds", "peak_window_duration_minutes",
     "n_sat_samples",
     "portal_qaqc_removal_start", "portal_qaqc_removal_end",
     "portal_qaqc_removal_duration_minutes", "overlap_with_peak_window",
     "tail_extension_minutes",
-    "ratio_bin0", "class_bin0", "ratio_bin1", "class_bin1",
-    "ratio_bin2", "class_bin2",
+    "ratio_bin0", "class_bin0", "pre_count_bin0", "peak_count_bin0",
+    "ratio_bin1", "class_bin1", "pre_count_bin1", "peak_count_bin1",
+    "ratio_bin2", "class_bin2", "pre_count_bin2", "peak_count_bin2",
     "plateau_bin0", "plateau_bin1",
     "aerotrak_peak_PM3_mass_ug_m3", "aerotrak_reversal_present",
     "aerotrak_reversal_onset", "aerotrak_t_min", "aerotrak_reversal_end",
@@ -1037,8 +1161,17 @@ def _write_cross_burn_csv(results: list[dict]) -> dict:
     n_pairs = len(present)
     sat = [r for r in present if r.get("saturated")]
     n_sat = len(sat)
-    fallback = [r for r in present if r.get("window_kind") == "near_ceiling"]
+    fallback = [
+        r for r in present
+        if str(r.get("peak_window_method", "")).startswith("fallback")
+    ]
     n_fallback = len(fallback)
+    # Tally fallback windows by method so the summary can state how each
+    # non-saturating record got its window.
+    method_counts = {}
+    for r in present:
+        m = r.get("peak_window_method", "none")
+        method_counts[m] = method_counts.get(m, 0) + 1
 
     # Near-saturation diagnostic. burn8 MODULAIR-PM2 carries dense smoke yet
     # neph_bin0 peaks at ~63 828, ~1700 counts short of the 65 535 ceiling, so
@@ -1048,7 +1181,7 @@ def _write_cross_burn_csv(results: list[dict]) -> dict:
     for r in present:
         if r.get("saturated"):
             continue
-        peak = r.get("plateau_value", np.nan)  # neph_bin0 max for fallback recs
+        peak = r.get("plateau_value", np.nan)  # in-window neph_bin0 max
         if np.isfinite(peak):
             near_misses.append((r["burn"], r["unit"], float(peak)))
 
@@ -1062,8 +1195,11 @@ def _write_cross_burn_csv(results: list[dict]) -> dict:
         vals = vals[~np.isnan(vals)]
         plateau_by_unit[unit] = float(np.median(vals)) if vals.size else np.nan
 
-    # OPC bin0 suppression tally.
-    supp = [r for r in present if r.get("class_bin0") == "suppressed"]
+    # OPC bin0 suppression tally over every record with a peak window (not just
+    # the saturated ones): burn8 MODULAIR-PM2 never pinned at the ceiling yet
+    # shows the same bin-0 collapse via its fallback window.
+    windowed = [r for r in present if pd.notna(r.get("t_peak_end"))]
+    supp = [r for r in windowed if r.get("class_bin0") == "suppressed"]
     supp_ratios = np.array(
         [r.get("ratio_bin0", np.nan) for r in supp], dtype=float
     )
@@ -1075,6 +1211,11 @@ def _write_cross_burn_csv(results: list[dict]) -> dict:
         dtype=float,
     )
     qa_dur = qa_dur[~np.isnan(qa_dur)]
+    # Most saturated burns had no portal removal at all, so the median over all
+    # saturated records is ~0 and reads as "nothing removed". Report the count
+    # of records that actually had a removal and the non-zero distribution
+    # alongside it so the QA/QC sentence is not undercut by the zeros.
+    qa_nonzero = qa_dur[qa_dur > 0]
     peak_dur = np.array(
         [r.get("peak_window_duration_minutes", np.nan) for r in sat], dtype=float
     )
@@ -1092,11 +1233,15 @@ def _write_cross_burn_csv(results: list[dict]) -> dict:
         n_burn_unit_pairs=n_pairs,
         neph_ceiling=NEPH_CEILING,
         n_neph_bin0_saturated=n_sat,
-        n_near_ceiling_fallback=n_fallback,
+        n_fallback_window=n_fallback,
+        n_fallback_burnlog=method_counts.get("fallback_burnlog", 0),
+        n_fallback_aerotrak=method_counts.get("fallback_aerotrak", 0),
+        n_fallback_opc=method_counts.get("fallback_opc", 0),
         plateau_median_MODULAIR_PM1=plateau_by_unit.get("MODULAIR-PM1", np.nan),
         plateau_median_MODULAIR_PM2=plateau_by_unit.get("MODULAIR-PM2", np.nan),
         pm2_max_unsaturated_neph_bin0=pm2_max_unsat_neph_bin0,
         n_opc_bin0_suppressed=int(len(supp)),
+        n_windowed=int(len(windowed)),
         opc_bin0_suppressed_median_ratio=(
             float(np.median(supp_ratios)) if supp_ratios.size else np.nan),
         peak_window_duration_median_min=(
@@ -1111,6 +1256,14 @@ def _write_cross_burn_csv(results: list[dict]) -> dict:
             float(np.min(qa_dur)) if qa_dur.size else np.nan),
         qaqc_removal_duration_max_min=(
             float(np.max(qa_dur)) if qa_dur.size else np.nan),
+        n_saturated_with_qaqc_removal=int(qa_nonzero.size),
+        n_saturated_qaqc=int(qa_dur.size),
+        qaqc_removal_nonzero_median_min=(
+            float(np.median(qa_nonzero)) if qa_nonzero.size else np.nan),
+        qaqc_removal_nonzero_min_min=(
+            float(np.min(qa_nonzero)) if qa_nonzero.size else np.nan),
+        qaqc_removal_nonzero_max_min=(
+            float(np.max(qa_nonzero)) if qa_nonzero.size else np.nan),
     )
     path = out_dir / "modulair_5sec_peak_cross_burn_summary.csv"
     pd.DataFrame([summary]).to_csv(str(path), index=False, float_format="%.4g")
@@ -1162,59 +1315,78 @@ def _write_summary_md(results: list[dict], summary: dict) -> None:
         f"{_fmt(summary['neph_ceiling'] - summary.get('pm2_max_unsaturated_neph_bin0', np.nan), '.0f')} "
         f"counts short of the {_fmt(summary['neph_ceiling'], '.0f')} ceiling, so "
         f"it never produced a true saturated plateau despite carrying dense "
-        f"smoke (co-located AeroTrak peak PM3 over 1200 ug/m3). For records that "
-        f"carried smoke but did not pin at the ceiling "
-        f"({summary['n_near_ceiling_fallback']} pairs, all MODULAIR-PM1 plus "
-        f"burn8 MODULAIR-PM2), the peak window is defined from the near-ceiling "
-        f"block (within {int(FALLBACK_PEAK_FRAC * 100)}% of the record's own "
-        f"neph_bin0 maximum) so the OPC ratios and the AeroTrak cross-reference "
-        f"still compute."
+        f"smoke (co-located AeroTrak peak PM3 over 1200 ug/m3); the 5 s record "
+        f"covers the peak with no data gap, so this is a genuine sub-ceiling "
+        f"maximum rather than a missing-sample artifact. For records that did "
+        f"not pin at the ceiling ({summary['n_fallback_window']} pairs, all "
+        f"MODULAIR-PM1 plus burn8 MODULAIR-PM2), the peak window is defined "
+        f"independently of the nephelometer: "
+        f"{summary['n_fallback_burnlog']} from the burn-log peak interval "
+        f"(garage closure or ignition to PAC activation), "
+        f"{summary['n_fallback_aerotrak']} from the co-located AeroTrak PM3 "
+        f"peak, and {summary['n_fallback_opc']} from the OPC-N3 total-count "
+        f"peak, so the OPC ratios and the AeroTrak cross-reference compute for "
+        f"every record with data."
     )
     lines.append(
         f"\nDuring the same peak window the OPC-N3 response was bin-dependent. "
         f"The smallest bin (bin 0, 0.35-0.46 um) was suppressed (peak/pre < 0.5) "
-        f"in {summary['n_opc_bin0_suppressed']} pairs, with a median peak/pre "
-        f"ratio of {_fmt(summary['opc_bin0_suppressed_median_ratio'], '.2f')} "
-        f"among the suppressed pairs (it collapsed to near zero while the "
-        f"nephelometer was pinned). The next-larger bins (bins 1-2) did not "
-        f"follow bin 0 down; they rose from a near-zero pre-fire baseline. "
-        f"Because those bin-1/bin-2 baselines sit below "
+        f"in {summary['n_opc_bin0_suppressed']} of the {summary['n_windowed']} "
+        f"records with a peak window, with a median peak/pre ratio of "
+        f"{_fmt(summary['opc_bin0_suppressed_median_ratio'], '.2f')} among the "
+        f"suppressed records (it collapsed toward zero while the nephelometer "
+        f"was pinned). The next-larger bins (bins 1-2) did not follow bin 0 "
+        f"down; they rose from a near-zero pre-fire baseline. Because those "
+        f"bin-1/bin-2 baselines sit below "
         f"{_fmt(MIN_BASELINE_FOR_RATIO, '.1f')} counts, their peak/pre ratios "
-        f"are not reported (the tiny denominator makes the ratio meaningless). "
-        f"See the per-pair table for the bin classifications."
+        f"are not reported (the tiny denominator makes the ratio meaningless); "
+        f"the classification instead uses the absolute peak count, and a bin "
+        f"that rose from a near-zero baseline is marked 'elevated_from_zero'. "
+        f"See the per-pair table for the bin classifications and absolute "
+        f"counts."
     )
     lines.append(
         f"\nThe 5 s peak window lasted a median of "
         f"{_fmt(summary['peak_window_duration_median_min'])} min "
         f"(range {_fmt(summary['peak_window_duration_min_min'])} to "
         f"{_fmt(summary['peak_window_duration_max_min'])} min). The portal QA/QC "
+        f"product removed peak-window data in "
+        f"{summary['n_saturated_with_qaqc_removal']} of the "
+        f"{summary['n_saturated_qaqc']} saturated records; among those, the "
         f"removal lasted a median of "
-        f"{_fmt(summary['qaqc_removal_duration_median_min'])} min "
-        f"(range {_fmt(summary['qaqc_removal_duration_min_min'])} to "
-        f"{_fmt(summary['qaqc_removal_duration_max_min'])} min)."
+        f"{_fmt(summary['qaqc_removal_nonzero_median_min'], '.0f')} min "
+        f"(range {_fmt(summary['qaqc_removal_nonzero_min_min'], '.0f')} to "
+        f"{_fmt(summary['qaqc_removal_nonzero_max_min'], '.0f')} min). The "
+        f"remaining saturated records had no portal removal over the peak."
     )
 
     # Per-pair table.
     lines.append("\n## Per-pair results\n")
     lines.append(
-        "| burn | unit | saturated | window kind | plateau/neph max | "
-        "peak win (min) | QA/QC (min) | overlap | tail (min) | bin0 (class) | "
-        "bin1 (class) | bin2 (class) | AeroTrak PM3 (ug/m3) | "
+        "| burn | unit | saturated | window method | plateau/neph max | "
+        "peak win (min) | QA/QC (min) | overlap | tail (min) | "
+        "bin0 ratio (class) | bin0 pre/peak ct | bin1 (class) | bin1 pre/peak ct | "
+        "bin2 (class) | bin2 pre/peak ct | AeroTrak PM3 (ug/m3) | "
         "AT reversal overlap | AT gap (min) |"
     )
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    lines.append(
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+    )
     for r in present:
         lines.append(
             f"| {r['burn']} | {r['unit']} | {r.get('saturated')} | "
-            f"{r.get('window_kind', 'none')} | "
+            f"{r.get('peak_window_method', 'none')} | "
             f"{_fmt(r.get('plateau_value'), '.0f')} | "
             f"{_fmt(r.get('peak_window_duration_minutes'))} | "
             f"{_fmt(r.get('portal_qaqc_removal_duration_minutes'))} | "
             f"{_fmt(r.get('overlap_with_peak_window'), '.2f')} | "
             f"{_fmt(r.get('tail_extension_minutes'))} | "
             f"{_fmt(r.get('ratio_bin0'), '.2f')} ({r.get('class_bin0')}) | "
+            f"{_fmt(r.get('pre_count_bin0'), '.2f')}/{_fmt(r.get('peak_count_bin0'), '.0f')} | "
             f"{_fmt(r.get('ratio_bin1'), '.2f')} ({r.get('class_bin1')}) | "
+            f"{_fmt(r.get('pre_count_bin1'), '.2f')}/{_fmt(r.get('peak_count_bin1'), '.0f')} | "
             f"{_fmt(r.get('ratio_bin2'), '.2f')} ({r.get('class_bin2')}) | "
+            f"{_fmt(r.get('pre_count_bin2'), '.2f')}/{_fmt(r.get('peak_count_bin2'), '.0f')} | "
             f"{_fmt(r.get('aerotrak_peak_PM3_mass_ug_m3'), '.0f')} | "
             f"{_fmt(r.get('aerotrak_reversal_overlap_fraction'), '.2f')} | "
             f"{_fmt(r.get('aerotrak_reversal_gap_minutes'), '.1f')} |"
@@ -1227,23 +1399,37 @@ def _write_summary_md(results: list[dict], summary: dict) -> None:
         lines.append(f"- {r['burn']} {r['unit']}: 5 s data missing (not imputed).")
         flagged = True
     for r in present:
+        method = r.get("peak_window_method", "none")
         if not r.get("saturated"):
-            if r.get("window_kind") == "near_ceiling":
-                peak = r.get("plateau_value", np.nan)
-                short = (
-                    summary["neph_ceiling"] - peak if np.isfinite(peak) else np.nan
-                )
+            peak = r.get("plateau_value", np.nan)
+            short = (
+                summary["neph_ceiling"] - peak if np.isfinite(peak) else np.nan
+            )
+            method_label = {
+                "fallback_burnlog": "burn-log peak-interval",
+                "fallback_aerotrak": "AeroTrak-peak",
+                "fallback_opc": "OPC-peak",
+            }.get(method, "no")
+            if method != "none":
                 lines.append(
                     f"- {r['burn']} {r['unit']}: nephelometer bin 0 did not reach "
                     f"the {_fmt(summary['neph_ceiling'], '.0f')} ceiling "
-                    f"(peaked at {_fmt(peak, '.0f')}, {_fmt(short, '.0f')} short); "
-                    f"near-ceiling fallback peak window used."
+                    f"(in-window max {_fmt(peak, '.0f')}, {_fmt(short, '.0f')} "
+                    f"short); {method_label} fallback peak window used."
                 )
             else:
                 lines.append(
-                    f"- {r['burn']} {r['unit']}: nephelometer bin 0 showed no smoke "
-                    f"excursion; no peak window defined."
+                    f"- {r['burn']} {r['unit']}: no peak window could be defined "
+                    f"(no saturation, no burn-log interval, no AeroTrak/OPC peak)."
                 )
+            flagged = True
+        if r.get("bedroom_sealed"):
+            lines.append(
+                f"- {r['burn']} {r['unit']}: Bedroom 2 sealed; co-located "
+                f"AeroTrak PM3 only "
+                f"{_fmt(r.get('aerotrak_peak_PM3_mass_ug_m3'), '.0f')} ug/m3. "
+                f"Windowed for completeness but not a dense-smoke case."
+            )
             flagged = True
         tail = r.get("tail_extension_minutes", np.nan)
         if not np.isnan(tail) and tail > 5.0:
@@ -1297,13 +1483,14 @@ def _write_manuscript_md(results: list[dict], summary: dict) -> None:
     pm2_near = summary.get("pm2_max_unsaturated_neph_bin0", np.nan)
 
     s_neph = (
-        f"The PMS5003 nephelometer channel saturated at its fixed 16-bit "
-        f"ceiling of {_fmt(ceiling, '.0f')} (median plateau "
-        f"{_fmt(plat_pm2, '.0f')} for the saturated MODULAIR-PM2 records; no "
-        f"MODULAIR-PM1 record saturated) during the peak window in {n_sat} of "
-        f"the {n_pairs} MODULAIR-PM-deployed burn-unit records analysed; the one "
-        f"Morning Room near-miss (burn8 MODULAIR-PM2) peaked at "
-        f"{_fmt(pm2_near, '.0f')}, just below the ceiling."
+        f"The PMS5003 nephelometer channel saturated at the 16-bit ceiling "
+        f"(65535) during the peak window in {n_sat} of the {n_pairs} "
+        f"MODULAIR-PM-deployed burn-unit records analysed (no MODULAIR-PM1 "
+        f"record saturated); the saturated-window plateau distribution spanned "
+        f"the ceiling closely (median {_fmt(plat_pm2, '.0f')} across the "
+        f"MODULAIR-PM2 records). The one Morning Room near-miss (burn8 "
+        f"MODULAIR-PM2) peaked at {_fmt(pm2_near, '.0f')}, just below the "
+        f"ceiling, with the 5 s record covering the peak with no data gap."
     )
     # bin-0 suppression over every record with a peak window (saturation or
     # near-ceiling fallback), not just the saturated ones: burn8 MODULAIR-PM2
@@ -1320,9 +1507,11 @@ def _write_manuscript_md(results: list[dict], summary: dict) -> None:
     min_supp_pct = float(np.min(supp_ratios) * 100) if supp_ratios.size else np.nan
     max_supp_pct = float(np.max(supp_ratios) * 100) if supp_ratios.size else np.nan
 
-    qa_med = summary["qaqc_removal_duration_median_min"]
-    qa_min = summary["qaqc_removal_duration_min_min"]
-    qa_max = summary["qaqc_removal_duration_max_min"]
+    qa_n_removed = summary["n_saturated_with_qaqc_removal"]
+    qa_n_sat = summary["n_saturated_qaqc"]
+    qa_nz_med = summary["qaqc_removal_nonzero_median_min"]
+    qa_nz_min = summary["qaqc_removal_nonzero_min_min"]
+    qa_nz_max = summary["qaqc_removal_nonzero_max_min"]
 
     s_intro = (
         "Raw 5 s data from the MODULAIR-PM instruments were obtained directly "
@@ -1338,11 +1527,12 @@ def _write_manuscript_md(results: list[dict], summary: dict) -> None:
         f"next-larger OPC-N3 bins increased over the same window."
     )
     s_qaqc = (
-        f"The portal-delivered QA/QC removed a window of approximately "
-        f"{_fmt(qa_med, '.0f')} minutes around peak (median across saturated "
-        f"records; range {_fmt(qa_min, '.0f')} to {_fmt(qa_max, '.0f')}), "
-        f"corresponding to the period where the nephelometer was saturated and "
-        f"the smallest OPC-N3 bin was suppressed."
+        f"The portal-delivered QA/QC product removed peak-window data in "
+        f"{qa_n_removed} of the {qa_n_sat} saturated records, for a median of "
+        f"{_fmt(qa_nz_med, '.0f')} minutes among those records (range "
+        f"{_fmt(qa_nz_min, '.0f')} to {_fmt(qa_nz_max, '.0f')} minutes); where a "
+        f"removal occurred it coincided with the period in which the "
+        f"nephelometer was saturated and the smallest OPC-N3 bin was suppressed."
     )
 
     para = (
@@ -1350,20 +1540,23 @@ def _write_manuscript_md(results: list[dict], summary: dict) -> None:
         f"on-instrument storage prior to QA/QC filtering, resolve the "
         f"sub-minute instrument behavior during the smoke peak. In "
         f"{n_sat} of the {n_pairs} burn-unit records analysed, the PMS5003 "
-        f"nephelometer bin 0 reached its fixed 16-bit ceiling of "
-        f"{_fmt(ceiling, '.0f')} (median plateau {_fmt(plat_pm2, '.0f')} for "
-        f"the saturated MODULAIR-PM2 records; no MODULAIR-PM1 record saturated); "
-        f"the value sat at that ceiling rather than tracking concentration, as a "
-        f"clipped 16-bit field would. Over the same window the OPC-N3 response "
-        f"was bin-dependent: the smallest bin (0.35-0.46 um) collapsed to a "
-        f"median of {_fmt(med_supp_pct, '.0f')}% of its pre-peak baseline in "
+        f"nephelometer bin 0 saturated at the 16-bit ceiling (65535; no "
+        f"MODULAIR-PM1 record saturated, median saturated-window value "
+        f"{_fmt(plat_pm2, '.0f')} across the MODULAIR-PM2 records); the value "
+        f"sat at that ceiling rather than tracking concentration, as a clipped "
+        f"16-bit field would. Over the same window the OPC-N3 response was "
+        f"bin-dependent: the smallest bin (0.35-0.46 um) collapsed to a median "
+        f"of {_fmt(med_supp_pct, '.0f')}% of its pre-peak baseline in "
         f"{n_supp} of the {n_windowed} records with a peak window, while the "
         f"next-larger bins rose from a near-zero pre-fire baseline (their "
         f"peak/pre ratios are not reported because that near-zero denominator "
-        f"makes the ratio meaningless). The portal-delivered QA/QC product "
-        f"removed approximately "
-        f"{_fmt(qa_med, '.0f')} minutes of data around the peak (median across "
-        f"saturated records), aligning with the period in which the nephelometer "
+        f"makes the ratio meaningless; the increase is documented by the "
+        f"absolute peak counts in the per-pair table instead). The "
+        f"portal-delivered QA/QC product removed peak-window data in "
+        f"{qa_n_removed} of the {qa_n_sat} saturated records (a median of "
+        f"{_fmt(qa_nz_med, '.0f')} minutes where a removal occurred, range "
+        f"{_fmt(qa_nz_min, '.0f')} to {_fmt(qa_nz_max, '.0f')}), and where it "
+        f"did, the removal coincided with the period in which the nephelometer "
         f"was saturated and the smallest OPC-N3 bin was suppressed. These "
         f"features were co-located in time with the AeroTrak Ch1 reversal "
         f"documented in Section 3.2.2, indicating that the peak-window behavior "
@@ -1407,17 +1600,44 @@ def main() -> None:
     events = load_event_times()
     at = _load_aerotrak()
 
+    # Pass 1: detect saturated windows to learn the median saturated half-width,
+    # which anchors the AeroTrak/OPC fallbacks (methods b and c). The burn-log
+    # fallback (a) does not need it, so most records resolve without pass 2.
+    sat_half_widths = []
+    for burn_id in BURNS:
+        for unit in UNITS:
+            df0 = load_5sec_burn(unit, burn_id)
+            if df0 is None or df0.empty:
+                continue
+            ev = events.loc[burn_id] if burn_id in events.index else None
+            ign = ev["ignition"] if ev is not None else pd.NaT
+            gar = ev["garage_closed"] if ev is not None else pd.NaT
+            pac = ev["pac_on"] if ev is not None else pd.NaT
+            pw0 = _detect_peak_window(df0, ign, gar, pac)
+            if pw0["saturated"] and np.isfinite(pw0["peak_window_duration_minutes"]):
+                sat_half_widths.append(pw0["peak_window_duration_minutes"] / 2.0)
+    median_half_width = (
+        float(np.median(sat_half_widths)) if sat_half_widths else np.nan
+    )
+    print(
+        f"\nMedian saturated-window half-width: "
+        f"{_fmt(median_half_width)} min "
+        f"(from {len(sat_half_widths)} saturated windows)."
+    )
+
     results: list[dict] = []
     for burn_id in BURNS:
         print(f"--- {burn_id} ---")
         for unit in UNITS:
-            rec = analyze_pair(burn_id, unit, events, at)
+            rec = analyze_pair(burn_id, unit, events, at, median_half_width)
             results.append(rec)
             if rec.get("data_present"):
                 print(
                     f"    {unit}: saturated={rec.get('saturated')} "
+                    f"method={rec.get('peak_window_method')} "
                     f"peak_win={_fmt(rec.get('peak_window_duration_minutes'))} min "
-                    f"bin0 ratio={_fmt(rec.get('ratio_bin0'), '.2f')}"
+                    f"bin0 ratio={_fmt(rec.get('ratio_bin0'), '.2f')} "
+                    f"({rec.get('class_bin0')})"
                 )
 
     print("\nWriting CSV outputs...")

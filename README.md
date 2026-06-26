@@ -52,6 +52,14 @@ NIST_wui_mh_iaq/
 │   │ # Concentration Dynamics
 │   ├── conc_increase_to_decrease.py
 │   ├── peak_concentration_script.py
+│   ├── bracketing.py
+│   ├── co2_decay_comparison.py
+│   │
+│   │ # Instrument Behavior Characterization
+│   ├── aerotrak_coincidence.py
+│   ├── modulair_5sec_io.py
+│   ├── modulair_5sec_peak_window.py
+│   ├── modulair_5sec_post_peak.py
 │   │
 │   │ # Spatial Variation Analysis
 │   ├── spatial_variation_analysis.py
@@ -72,6 +80,7 @@ NIST_wui_mh_iaq/
 │   ├── smps_heatmap.py
 │   ├── smps_mass_vs_conc.py
 │   ├── smps_size_bin_barchart.py
+│   ├── smps_size_distribution_comparison.py
 │   │
 │   │ # Data Processing & Utilities
 │   ├── remove_aerotrak_dup_data.py
@@ -95,7 +104,8 @@ NIST_wui_mh_iaq/
 └── testing/                          # Diagnostic and testing scripts
     ├── diagnostic_hourly_ratios.py
     ├── diagnostic_spatial_variation.py
-    └── diagnostic_timestamp_alignment.py
+    ├── diagnostic_timestamp_alignment.py
+    └── quantaq_5sec_timeseries.py
 ```
 
 ## Experimental Design
@@ -109,6 +119,7 @@ The study conducted multiple controlled burn experiments (Burn 1–10) in a manu
 - **TSI SMPS 3938 (Scanning Mobility Particle Sizer)** — Ultrafine particle size distribution (9–437 nm)
 - **PurpleAir PA-II-SD** — Community-grade PM sensors
 - **Vaisala** — Temperature and relative humidity sensors
+- **Aranet4** — CO₂ sensors in Bedroom, Entry, and MH Outside locations
 
 **Measured Pollutants:**
 - PM₀.₅, PM₁, PM₂.₅, PM₃, PM₄, PM₅, PM₁₀, PM₁₅, PM₂₅ (μg/m³)
@@ -204,6 +215,8 @@ WUI_smoke/
 │   │   └── *.csv
 │   ├── vaisala_th/
 │   │   └── *.xlsx
+│   ├── co2/
+│   │   └── *.csv
 │   └── relaycontrol/
 │       └── *.txt
 ├── burn_dates_decay_aerotraks_bedroom.xlsx
@@ -231,6 +244,14 @@ WUI_smoke/
 #### Concentration Dynamics
 - **`conc_increase_to_decrease.py`** — Analysis of concentration increase vs. decay phase
 - **`peak_concentration_script.py`** — Peak PM concentration identification and characterization
+- **`bracketing.py`** — Brackets the true peak PM mass concentration between a DustTrak photometer upper bound (biomass-smoke correction factors) and an AeroTrak OPC lower bound (unit-density correction), with MODULAIR-PM and PurpleAir cross-checks
+- **`co2_decay_comparison.py`** — Plots CO₂ traces (Bedroom, Entry, MH Outside) and fits exponential decay to bedroom CO₂ over user-defined intervals to quantify decay rates with uncertainty
+
+#### Instrument Behavior Characterization
+- **`aerotrak_coincidence.py`** — Validates the transient optical-coincidence claim: detects bin reversals in the AeroTrak channels, estimates coincidence losses via a Poisson dead-time model, checks counts conservation, and cross-checks against co-located SMPS number concentration
+- **`modulair_5sec_io.py`** — Shared I/O for the MODULAIR-PM analyses: loads the raw on-instrument 5 s SD-card record (no QA/QC) and the QA/QC-filtered 1-minute portal product, with UTC-to-local and per-unit clock-correction handling
+- **`modulair_5sec_peak_window.py`** — Characterizes the raw 5 s MODULAIR-PM record during the smoke-peak window: PMS5003 nephelometer saturation, OPC-N3 small-bin suppression, and alignment with the portal QA/QC removal window
+- **`modulair_5sec_post_peak.py`** — Quantifies the post-peak OPC-N3 small-bin count inversion and contrasts it against the monotonic decay of co-located AeroTrak and SMPS measurements
 
 #### Spatial Variation Analysis
 - **`spatial_variation_analysis.py`** — Spatial variability quantification (Peak Ratio Index, Average Ratio, RSD)
@@ -251,6 +272,7 @@ WUI_smoke/
 - **`smps_heatmap.py`** — Particle size distribution evolution heatmap
 - **`smps_mass_vs_conc.py`** — Mass concentration vs. number concentration analysis
 - **`smps_size_bin_barchart.py`** — CADR-per-CR-box barcharts grouped by SMPS size bins (9–100 nm, 100–200 nm, 200–300 nm, 300–437 nm) for filter count, new vs. used filter, and MERV grade comparisons
+- **`smps_size_distribution_comparison.py`** — Compares normalized dN/dlogDp distributions of WUI mixed-fuel smoke against the KCl challenge aerosol used for ASTM CADR derivation
 
 #### Data Processing Utilities
 - **`data_paths.py`** — Portable path resolver; reads `data_config.json` to provide machine-independent access to instrument data folders and common files without hardcoded paths
@@ -262,6 +284,7 @@ WUI_smoke/
 - **`diagnostic_timestamp_alignment.py`** — Examines raw AeroTrak timestamps and resampling behavior to diagnose merge failures in hourly spatial variation bins
 - **`diagnostic_hourly_ratios.py`** — Diagnostic analysis of hourly concentration ratios between instruments
 - **`diagnostic_spatial_variation.py`** — Diagnostic checks for spatial variation calculation inputs and outputs
+- **`quantaq_5sec_timeseries.py`** — Plots raw MODULAIR-PM 5 s time series with QA/QC flag rendering; establishes the UTC-to-local and per-unit clock-correction conventions reused by the `modulair_5sec_*` analyses
 
 ### Reusable Utility Modules (`scripts/`)
 
@@ -352,6 +375,7 @@ where *V* is the effective room volume (m³). When two baseline burns are availa
 | QuantAQ Kitchen | MODULAIR-PM (MOD-PM-00197) | PM monitoring | 4–10 |
 | SMPS | TSI SMPS 3938 | Ultrafine size distribution (9–437 nm) | 1–10 |
 | Vaisala T/RH | Vaisala sensors | Temperature and relative humidity | 1–10 |
+| CO₂ | Aranet4 | CO₂ concentration (Bedroom, Entry, MH Outside) | 1–10 |
 
 ## Data Availability
 

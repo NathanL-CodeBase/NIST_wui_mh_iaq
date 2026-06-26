@@ -73,7 +73,9 @@
     "burn_dates_decay_smps": "PATH_TO_DATA_ROOT/burn_dates_decay_smps.xlsx",
     "peak_concentrations": "PATH_TO_DATA_ROOT/burn_data/peak_concentrations_all_instruments.xlsx",
     "spatial_variation": "PATH_TO_DATA_ROOT/burn_data/spatial_variation_analysis.xlsx",
-    "output_figures": "PATH_TO_DATA_ROOT/Paper_figures"
+    "output_figures": "PATH_TO_DATA_ROOT/Paper_figures",
+    "bracketing_analysis": "PATH_TO_DATA_ROOT/burn_data/bracketing_analysis",
+    "bracketing_figures": "PATH_TO_DATA_ROOT/Paper_figures/bracketing_figures"
   },
 
   "notes": [

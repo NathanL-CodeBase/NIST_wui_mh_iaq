@@ -39,7 +39,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from bokeh.io import reset_output
 from bokeh.layouts import column as bokeh_column
-from bokeh.models import HoverTool, Label, Span
+from bokeh.models import HoverTool, Label, LinearAxis, Range1d, Span
 from bokeh.plotting import figure, output_file, save
 
 # --- repository root on path ---------------------------------------------------
@@ -86,6 +86,12 @@ CHANNELS = [
     ("Ch6", 10.0, 25.0),
 ]
 ANALYSIS_CH = CHANNELS[:3]  # three smallest bins for coincidence check
+
+# Raw differential-count columns used to fingerprint a row when removing
+# Morning Room data that was merged into the Bedroom 2 export (see
+# _drop_foreign_rows). A row is a duplicate only if its timestamp AND all six
+# differential counts match the other instrument exactly.
+_DIFF_COLS = [f"{ch} Diff (#)" for ch, _lo, _hi in CHANNELS]
 
 # Instrument time shifts (minutes applied to raw timestamps)
 TIME_SHIFTS = {"AeroTrak1": 2.16, "AeroTrak2": 5.0}
@@ -177,6 +183,59 @@ def _load_burn_log() -> pd.DataFrame:
 # ==============================================================================
 
 
+def _drop_foreign_rows(df: pd.DataFrame, other_instrument: str) -> pd.DataFrame:
+    """
+    Remove rows that are an exact copy of another instrument's record.
+
+    On at least one burn day (2024-05-06) the Bedroom 2 export was merged with
+    a copy of the Morning Room record, so the Bedroom 2 file carries both
+    instruments' rows on that date. The foreign rows interleave with the real
+    Bedroom 2 samples, halving the effective cadence and inserting Morning
+    Room values that corrupt peak and reversal detection.
+
+    A row is treated as foreign only when its raw timestamp AND all six
+    differential counts match a row in the other instrument's file exactly, so
+    genuine Bedroom 2 samples (which never coincide with the Morning Room down
+    to the count) are always kept. Days with no overlap are returned unchanged.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Raw rows for this instrument (pre time shift), columns stripped.
+    other_instrument : str
+        The instrument whose rows may have been merged in (e.g. "AeroTrak2").
+
+    Returns
+    -------
+    pd.DataFrame
+        df with exact other-instrument duplicates removed.
+    """
+    other_path = get_instrument_path(INSTR_KEY[other_instrument]) / "all_data.xlsx"
+    other = pd.read_excel(other_path)
+    other.columns = other.columns.str.strip()
+    other["Date and Time"] = pd.to_datetime(other["Date and Time"])
+
+    key_cols = ["Date and Time"] + [c for c in _DIFF_COLS if c in df.columns]
+    if not set(key_cols).issubset(other.columns):
+        return df  # cannot fingerprint; leave unchanged
+
+    foreign_keys = set(other[key_cols].itertuples(index=False, name=None))
+    is_foreign = [
+        row in foreign_keys
+        for row in df[key_cols].itertuples(index=False, name=None)
+    ]
+    n_dropped = int(np.sum(is_foreign))
+    if n_dropped:
+        days = sorted(
+            df.loc[is_foreign, "Date and Time"].dt.date.unique().tolist()
+        )
+        print(
+            f"  [loader] Dropped {n_dropped} {other_instrument}-duplicate rows "
+            f"merged into the record on {', '.join(str(d) for d in days)}."
+        )
+    return df[[not f for f in is_foreign]].reset_index(drop=True)
+
+
 def _load_aerotrak_all(instrument: str) -> pd.DataFrame:
     """
     Load the combined AeroTrak all_data.xlsx, apply the time shift, apply
@@ -201,6 +260,13 @@ def _load_aerotrak_all(instrument: str) -> pd.DataFrame:
     df = pd.read_excel(path)
     df.columns = df.columns.str.strip()
     df["Date and Time"] = pd.to_datetime(df["Date and Time"])
+
+    # On some days the Bedroom 2 (AeroTrak1) export was merged with a copy of
+    # the Morning Room (AeroTrak2) record, so the same burn day carries both
+    # instruments' rows. Drop the foreign rows before the time shift, while raw
+    # timestamps still line up between the two files.
+    if instrument == "AeroTrak1":
+        df = _drop_foreign_rows(df, "AeroTrak2")
 
     # Apply instrument time shift
     df["Date and Time"] += pd.Timedelta(minutes=TIME_SHIFTS[instrument])
@@ -927,7 +993,10 @@ def _bokeh_individual(result: dict) -> None:
             legend_label=instrument,
         )
 
-        # SMPS overlay on Ch1 panel (AeroTrak1 with reversal)
+        # SMPS overlay on Ch1 panel (AeroTrak1 with reversal). The SMPS
+        # 300-437 nm number concentration is roughly an order of magnitude
+        # larger than the AeroTrak Ch1 count, so it goes on a right-hand
+        # secondary axis: on a shared axis the AeroTrak trace flattens out.
         if (
             ch == "Ch1"
             and instrument == "AeroTrak1"
@@ -954,13 +1023,28 @@ def _bokeh_individual(result: dict) -> None:
                         f"window {t_start} to {window_end}"
                     )
             else:
+                smps_vals = smps_c[smps_m].to_numpy(dtype=float)
+                smps_hi = float(np.nanmax(smps_vals)) if smps_vals.size else 1.0
+                if not np.isfinite(smps_hi) or smps_hi <= 0:
+                    smps_hi = 1.0
+                p.extra_y_ranges = {"smps": Range1d(start=0, end=smps_hi * 1.05)}
+                p.add_layout(
+                    LinearAxis(
+                        y_range_name="smps",
+                        axis_label="SMPS 300–437 nm (#/cm³)",
+                        axis_label_text_color=COLOR["smps"],
+                        major_label_text_color=COLOR["smps"],
+                    ),
+                    "right",
+                )
                 p.line(
                     sub_s["datetime"],
-                    smps_c[smps_m].values,
+                    smps_vals,
                     color=COLOR["smps"],
                     line_width=1.8,
                     line_dash="dashed",
                     legend_label="SMPS 300–437 nm",
+                    y_range_name="smps",
                 )
 
         # TSI 10 % coincidence threshold reference line on Ch1 panel only
@@ -1411,12 +1495,22 @@ def _write_markdown(all_results: list[dict]) -> None:
     Write aerotrak_coincidence_summary.md and aerotrak_manuscript_sentences.md
     to the coincidence_analysis folder.
 
-    All numbers are derived from data; no values are estimated from memory.
+    Prevalence, the worked example, the practical mass threshold, and the
+    timing tally are all reported over the NON-SEALED burn-instrument pairs
+    only. The two sealed Bedroom 2 burns (burn5, burn6) saw far lower indoor
+    smoke because the room was closed off, so they are not representative of
+    the high-concentration reversal phenomenon and are excluded from the
+    headline statistics. All numbers are derived from data; no values are
+    estimated from memory.
     """
     out_dir = get_common_file("coincidence_analysis")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    valid = [r for r in all_results if not np.isnan(r.get("n_peak_cm3", np.nan))]
+    valid = [
+        r
+        for r in all_results
+        if not np.isnan(r.get("n_peak_cm3", np.nan)) and not r.get("bedroom_sealed")
+    ]
     rev = [r for r in valid if r.get("reversal_present")]
 
     n_total = len(valid)
@@ -1445,6 +1539,14 @@ def _write_markdown(all_results: list[dict]) -> None:
             if not np.isnan(r.get("reversal_onset_pre_pm3peak_minutes", np.nan))
         ]
     )
+    # Resolve the relative timing of the Ch1 reversal onset against the PM3 mass
+    # peak. Positive = onset preceded the mass peak, 0 = coincident, negative =
+    # onset followed it. A single conflated median is misleading because the
+    # distribution straddles zero, so report the three categories separately.
+    n_timing_determinable = int(len(timing_arr))
+    n_precede = int((timing_arr > 0).sum())
+    n_at_peak = int((timing_arr == 0).sum())
+    n_follow = int((timing_arr < 0).sum())
 
     cons_fails = [r for r in rev if r.get("counts_conserved") is False]
 
@@ -1470,17 +1572,18 @@ def _write_markdown(all_results: list[dict]) -> None:
         n_fail = len(cons_fails)
 
         para1 = (
-            f"{n_rev} of {n_total} burn-instrument pairs showed a Ch1 reversal "
-            f"(0.3-0.5 um count falling below 50% of the local maximum). "
+            f"{n_rev} of {n_total} non-sealed burn-instrument pairs showed a Ch1 "
+            f"reversal (0.3-0.5 um count falling below 50% of the local maximum). "
             f"Median reversal duration was {_fmt(med_dur, '.0f')} minutes "
             f"(range {_fmt(min_dur, '.0f')} to {_fmt(max_dur, '.0f')} minutes). "
             f"Median peak PM3 mass concentration at the time of the reversal was "
-            f"approximately {_fmt(med_pm3_rev, '.0f')} ug/m3."
+            f"approximately {_fmt(med_pm3_rev, '.0f')} ug/m3. (The two sealed "
+            f"Bedroom 2 burns are excluded from these headline statistics.)"
         )
 
         para2 = (
-            f"Median peak 0.3-0.5 um count concentration across all pairs was "
-            f"{_fmt(med_npeak)} particles/cm3, a factor of "
+            f"Median peak 0.3-0.5 um count concentration across all non-sealed pairs "
+            f"was {_fmt(med_npeak)} particles/cm3, a factor of "
             f"{_fmt(factor_med, '.2f')} below the TSI manufacturer's 10% "
             f"coincidence threshold of {COINCIDENCE_THRESHOLD_CM3:.1e} particles/cm3. "
             f"The Poisson dead-time model predicts coincidence losses of "
@@ -1497,26 +1600,23 @@ def _write_markdown(all_results: list[dict]) -> None:
             f"mechanism of Poisson coincidence."
         )
 
-        n_pre = len(timing_arr)
-        para4 = ""
-        if n_pre > n_rev / 2:
-            med_timing = float(np.median(timing_arr))
-            para4 = (
-                f"In {n_pre} of {n_rev} reversal pairs where reversal timing was "
-                f"determinable, the Ch1 reversal onset preceded the PM3 mass peak "
-                f"by a median of {_fmt(med_timing, '.1f')} minutes, inconsistent "
-                f"with a mechanism that scales monotonically with instantaneous "
-                f"particle concentration."
-            )
+        para4 = (
+            f"In {n_timing_determinable} of {n_rev} reversal pairs the relative "
+            f"timing of the Ch1 reversal onset and the PM3 mass peak was "
+            f"determinable: the reversal onset preceded the mass peak in "
+            f"{n_precede}, coincided with it in {n_at_peak}, and followed it in "
+            f"{n_follow}. Onset is therefore not locked to the instantaneous "
+            f"particle concentration, inconsistent with a mechanism that scales "
+            f"monotonically with it."
+        )
 
         parts = [
             "# AeroTrak Coincidence Analysis - Summary\n\n## Plain-language summary",
             para1,
             para2,
             para3,
+            para4,
         ]
-        if para4:
-            parts.append(para4)
 
         (out_dir / "aerotrak_coincidence_summary.md").write_text(
             "\n\n".join(parts) + "\n", encoding="utf-8"
@@ -1529,7 +1629,6 @@ def _write_markdown(all_results: list[dict]) -> None:
     min_dur_s = _fmt(float(np.min(dur_arr)) if len(dur_arr) > 0 else np.nan, ".0f")
     max_dur_s = _fmt(float(np.max(dur_arr)) if len(dur_arr) > 0 else np.nan, ".0f")
     med_pm3_s = _fmt(float(np.median(pm3_rev_arr)) if len(pm3_rev_arr) > 0 else np.nan, ".0f")
-    min_pm3_s = _fmt(float(np.min(pm3_rev_arr)) if len(pm3_rev_arr) > 0 else np.nan, ".0f")
 
     min_npeak = float(np.min(n_peak_arr)) if len(n_peak_arr) > 0 else np.nan
     max_npeak = float(np.max(n_peak_arr)) if len(n_peak_arr) > 0 else np.nan
@@ -1539,9 +1638,10 @@ def _write_markdown(all_results: list[dict]) -> None:
     med_L_pct = float(np.median(L_arr)) * 100 if len(L_arr) > 0 else np.nan
 
     n_fail_s = len(cons_fails)
-    n_pre_s = len(timing_arr)
 
-    # Worked example: reversal pair with the largest n_peak (most dramatic event)
+    # Worked example: a high-concentration reversal pair. Select by peak PM3
+    # mass (the dramatic, manuscript-relevant case), not by n_peak count, so
+    # the example reflects the dense-smoke conditions the section is about.
     ex_cands = [
         r
         for r in rev
@@ -1549,8 +1649,9 @@ def _write_markdown(all_results: list[dict]) -> None:
         and "Ch1" in r["_ch_results"]
         and not np.isnan(r.get("n_peak_cm3", np.nan))
         and not np.isnan(r.get("reversal_duration_minutes", np.nan))
+        and not np.isnan(r.get("peak_total_PM3_mass_ug_m3", np.nan))
     ]
-    ex = max(ex_cands, key=lambda r: r["n_peak_cm3"]) if ex_cands else None
+    ex = max(ex_cands, key=lambda r: r["peak_total_PM3_mass_ug_m3"]) if ex_cands else None
 
     if ex is not None:
         ex_burn = ex["burn"]
@@ -1569,7 +1670,7 @@ def _write_markdown(all_results: list[dict]) -> None:
 
     s1 = (
         f"Channel reversals in the 0.3-0.5 um bin (Ch1 count falling below 50% of "
-        f"the local maximum) were detected in {n_rev} of {n_total} AeroTrak "
+        f"the local maximum) were detected in {n_rev} of {n_total} non-sealed AeroTrak "
         f"burn-instrument pairs analysed, with a median reversal duration of "
         f"approximately {med_dur_s} minutes (range {min_dur_s} to {max_dur_s} minutes) "
         f"and a median peak total PM3 mass concentration of approximately "
@@ -1593,10 +1694,10 @@ def _write_markdown(all_results: list[dict]) -> None:
     )
 
     s4 = (
-        f"The reversal phenomenon was consistently observed at peak total PM3 mass "
-        f"concentrations exceeding approximately {min_pm3_s} ug/m3; OPC-derived count "
-        f"concentrations and mass estimates should be interpreted with caution above "
-        f"this level."
+        f"The reversal phenomenon was associated with dense smoke, occurring at a "
+        f"median peak total PM3 mass concentration of approximately {med_pm3_s} ug/m3 "
+        f"across the non-sealed pairs; OPC-derived count concentrations and mass "
+        f"estimates should be interpreted with caution at these levels."
     )
 
     s5 = (
@@ -1610,26 +1711,38 @@ def _write_markdown(all_results: list[dict]) -> None:
         f"observed suppression ({_fmt(ex_supp, '.0f')}% of the local maximum)."
     )
 
+    s6 = (
+        f"The relative timing of the Ch1 reversal onset and the PM3 mass peak was "
+        f"determinable in {n_timing_determinable} of {n_rev} reversal pairs; the "
+        f"onset preceded the mass peak in {n_precede}, coincided with it in "
+        f"{n_at_peak}, and followed it in {n_follow}, so the reversal is not locked "
+        f"to the instantaneous particle concentration."
+    )
+
     ms_text = (
         "# AeroTrak Coincidence - Manuscript Sentences for Section 3.2.2\n\n"
-        "_All values derived from data. Insert into manuscript text._\n\n"
+        "_All values derived from data and reported over the non-sealed "
+        "burn-instrument pairs. Insert into manuscript text._\n\n"
         "---\n\n"
         f'**Sentence 1 (reversal prevalence):** "{s1}"\n\n'
         f'**Sentence 2 (coincidence hypothesis test - null result):** "{s2}"\n\n'
         f'**Sentence 3 (counts conservation):** "{s3}"\n\n'
         f'**Sentence 4 (practical threshold):** "{s4}"\n\n'
         f'**Sentence 5 (worked example: {ex_burn}, {ex_loc}):** "{s5}"\n\n'
+        f'**Sentence 6 (reversal-onset timing):** "{s6}"\n\n'
         "---\n\n"
         "## Supporting statistics\n\n"
         "| Quantity | Value |\n"
         "|---|---|\n"
-        f"| Burn-instrument pairs analysed | {n_total} |\n"
+        f"| Non-sealed burn-instrument pairs analysed | {n_total} |\n"
         f"| Pairs with Ch1 reversal | {n_rev} |\n"
         f"| Median n_peak all pairs (#/cm3) | {_fmt(med_npeak_s)} |\n"
         f"| Median reversal duration (min) | {med_dur_s} |\n"
         f"| Median L_central all pairs (%) | {_fmt(med_L_pct, '.1f')} |\n"
         f"| Median peak PM3 at reversal (ug/m3) | {med_pm3_s} |\n"
-        f"| Pairs with pre-peak timing data | {n_pre_s} of {n_rev} |\n"
+        f"| Reversal-onset timing determinable | {n_timing_determinable} of {n_rev} |\n"
+        f"| Onset preceded / at / followed mass peak | "
+        f"{n_precede} / {n_at_peak} / {n_follow} |\n"
         f"| Factor below TSI threshold (median) | {_fmt(factor_ms, '.2f')} |\n"
     )
     (out_dir / "aerotrak_manuscript_sentences.md").write_text(ms_text, encoding="utf-8")

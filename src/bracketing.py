@@ -5,7 +5,7 @@ For every burn with a co-located DustTrak (photometer) and AeroTrak (OPC) at
 the same location, this script brackets the true peak PM mass concentration:
 
     Upper bound  = DustTrak total mass corrected by literature biomass-smoke
-                   factors (1.5 to 4).
+                   factors (1.6 to 4).
     Lower bound  = AeroTrak PM3 mass corrected for unit-density bias only
                    (1.2 to 1.5). No coincidence-loss term is applied: the
                    Poisson model (Prompt 1) gives L < 0.1% at observed peak
@@ -57,6 +57,13 @@ _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
 from src.aerotrak_coincidence import _load_aerotrak_all  # noqa: E402
 from src.data_paths import get_common_file, get_instrument_path  # noqa: E402
+from src.fig_style import (  # noqa: E402
+    LOC_COLORS,
+    ROLE_COLORS,
+    apply_est_style,
+    figsize,
+    save_fig,
+)
 from src.modulair_5sec_io import BURN_DATES, load_event_times, load_portal_burn  # noqa: E402
 
 # ==============================================================================
@@ -93,7 +100,7 @@ DUSTTRAK_TIME_SHIFT_MIN = 7.0
 
 # Correction-factor ranges (literature, citations pre-verified in the prompt).
 DUSTTRAK_CF_LOW = 4.0    # Delp & Singer 2020 (factor ~4 for fresh wildfire smoke)
-DUSTTRAK_CF_HIGH = 1.5   # low end of biomass-smoke range (McNamara 2011 ~1.6)
+DUSTTRAK_CF_HIGH = 1.6   # low end of biomass-smoke range (McNamara 2011 ~1.6)
 DENSITY_LOW = 1.2        # Reid et al. 2005 unit-density correction, low end
 DENSITY_HIGH = 1.5       # Reid et al. 2005 unit-density correction, high end
 PURPLEAIR_CF_LOW = 2.1   # PurpleAir Plantower overestimate, smoke (high divisor)
@@ -110,17 +117,8 @@ EXAMPLE_LOC = "morning_room"
 COINCIDENCE_CSV = "aerotrak_coincidence_per_burn.csv"
 MODULAIR_CSV = "modulair_5sec_peak_per_burn.csv"
 
-# Matplotlib TEXT_CONFIG (project convention).
-TEXT_CONFIG = {
-    "font_size": "12pt",
-    "title_font_size": "12pt",
-    "axis_label_font_size": "12pt",
-    "axis_tick_font_size": "12pt",
-    "legend_font_size": "12pt",
-    "plot_font_style": "bold",
-    "font_style": "normal",
-}
-_FS = 12  # numeric point size for matplotlib calls
+# Numeric point size for matplotlib calls (matches src.fig_style BASE_FONT_PT).
+_FS = 12
 
 # CSV column order for the per-burn output.
 _PER_BURN_COLS = [
@@ -332,7 +330,7 @@ def _compute_bracket(
         spread_uncorrected, spread_corrected, bracket_consistent,
         bracket_inverted.
     """
-    # Upper bound: DustTrak corrected by biomass-smoke factors (1.5 to 4).
+    # Upper bound: DustTrak corrected by biomass-smoke factors (1.6 to 4).
     mass_upper_low = dusttrak_ug / DUSTTRAK_CF_LOW
     mass_upper_high = dusttrak_ug / DUSTTRAK_CF_HIGH
 
@@ -544,7 +542,7 @@ def _sensitivity(example: dict) -> pd.DataFrame:
     # density (1.2) so spread_corrected = mass_upper / mass_lower_low.
     mass_lower_low_def = at * DENSITY_LOW
     for label, cfac in [
-        ("DustTrak CF 1.5 (low; mass_upper_high)", 1.5),
+        ("DustTrak CF 1.6 (low; mass_upper_high)", 1.6),
         ("DustTrak CF 2.5 (midpoint)", 2.5),
         ("DustTrak CF 4.0 (high; mass_upper_low)", 4.0),
     ]:
@@ -634,7 +632,11 @@ def _fig_burn09_bars(example: dict, fig_dir: Path) -> None:
     Worked-example bar figure: one horizontal bar per instrument showing the
     raw reading (point) and the corrected range (shaded band). DustTrak labeled
     with the correction-factor source; AeroTrak labeled with the density range
-    and the suppression flag if present. Intended for main text.
+    and the suppression flag if present. Intended for main text (Figure 4).
+
+    Raw-value labels are placed to the LEFT of each point (ha="right") so they
+    cannot collide with the corrected band that extends to the point's right,
+    and the x-limits carry headroom so no text leaves the axes.
     """
     dt = example["dusttrak_ug"]
     at = example["aerotrak_pm3_ug"]
@@ -649,8 +651,8 @@ def _fig_burn09_bars(example: dict, fig_dir: Path) -> None:
             dt,
             example["mass_upper_low"],
             example["mass_upper_high"],
-            "#ef5675",
-            "corrected /1.5 to /4\n(McNamara 2011; Delp & Singer 2020)",
+            ROLE_COLORS["DustTrak"],
+            "corrected /1.6 to /4\n(McNamara 2011; Delp & Singer 2020)",
         )
     )
     at_note = "corrected x1.2 to x1.5 (Reid 2005)"
@@ -662,7 +664,7 @@ def _fig_burn09_bars(example: dict, fig_dir: Path) -> None:
             at,
             example["mass_lower_low"],
             example["mass_lower_high"],
-            "#003f5c",
+            ROLE_COLORS["OPC-N3"],
             at_note,
         )
     )
@@ -673,13 +675,20 @@ def _fig_burn09_bars(example: dict, fig_dir: Path) -> None:
                 pa,
                 example["mass_mid_low"],
                 example["mass_mid_high"],
-                "#ffa600",
+                ROLE_COLORS["PurpleAir"],
                 "corrected /1.6 to /2.1",
             )
         )
 
-    fig, ax = plt.subplots(figsize=(9.0, 4.6))
+    fig, ax = plt.subplots(figsize=figsize("onehalf", aspect=0.78))
     y_positions = list(range(len(bars)))[::-1]
+
+    # x-range with headroom: low end below the smallest value, high end with
+    # room for the right-hand correction-factor annotations on a log axis.
+    all_vals = [v for b in bars for v in (b[1], b[2], b[3]) if not np.isnan(v)]
+    x_lo = min(all_vals) / 3.0
+    x_hi = max(all_vals) * 6.0
+    ax.set_xlim(x_lo, x_hi)
 
     for y, (label, raw, lo, hi, color, note) in zip(y_positions, bars):
         # Corrected range as a shaded band.
@@ -689,11 +698,13 @@ def _fig_burn09_bars(example: dict, fig_dir: Path) -> None:
         )
         # Raw instrument reading as a point.
         ax.plot(raw, y, "o", color=color, markersize=9, zorder=5)
+        # Raw-value label to the LEFT of the point, clear of the band.
         ax.annotate(
             f"raw {raw:.0f}",
-            xy=(raw, y), xytext=(0, 12), textcoords="offset points",
-            ha="center", fontsize=_FS - 2, color=color,
+            xy=(raw, y), xytext=(-8, 0), textcoords="offset points",
+            ha="right", va="center", fontsize=_FS - 2, color=color,
         )
+        # Correction-factor note to the right of the band's high end.
         ax.annotate(
             note,
             xy=(hi, y), xytext=(8, 0), textcoords="offset points",
@@ -701,38 +712,33 @@ def _fig_burn09_bars(example: dict, fig_dir: Path) -> None:
         )
 
     ax.set_yticks(y_positions)
-    ax.set_yticklabels(
-        [b[0] for b in bars], fontsize=_FS, fontweight=TEXT_CONFIG["font_style"]
-    )
+    ax.set_yticklabels([b[0] for b in bars], fontsize=_FS)
+    ax.set_ylim(-0.7, len(bars) - 0.3)
     ax.set_xscale("log")
-    ax.set_xlabel(
-        "PM mass concentration (µg/m³)", fontsize=_FS, fontweight="bold"
-    )
+    ax.set_xlabel("PM mass concentration (µg/m³)", fontsize=_FS)
     ax.tick_params(axis="x", labelsize=_FS)
-    ax.set_title(
-        "Burn 09 Morning Room: raw readings and corrected bracket",
-        fontsize=_FS, fontweight="bold",
-    )
+    ax.set_title("Burn 09 Morning Room: raw readings and corrected bracket",
+                 fontsize=_FS)
     ax.grid(axis="x", ls=":", alpha=0.4)
-    fig.tight_layout()
 
-    fig_dir.mkdir(parents=True, exist_ok=True)
-    path = fig_dir / "bracketing_burn09_morning_room.png"
-    fig.savefig(path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"    [fig] {path.name}")
+    save_fig(fig, fig_dir / "bracketing_burn09_morning_room.png")
 
 
 def _fig_cross_burn(df: pd.DataFrame, fig_dir: Path) -> None:
     """
-    Cross-burn figure: one panel per location, x = burn number, y = corrected
-    range as a vertical band from mass_lower_low to mass_upper_high. Log y.
+    Cross-burn figure (Figure S6): one panel per location, x = burn number, y =
+    corrected range as a vertical band from mass_lower_low to mass_upper_high.
+    Shared log y. The lower-bound (mass_lower_low) and upper-bound
+    (mass_upper_high) values are annotated next to each band so the bracket
+    endpoints are readable.
     """
     locations = ["bedroom2", "morning_room"]
     loc_labels = {"bedroom2": "Bedroom 2", "morning_room": "Morning Room"}
-    loc_color = {"bedroom2": "#003f5c", "morning_room": "#ef5675"}
+    loc_color = {"bedroom2": LOC_COLORS["bedroom2"],
+                 "morning_room": LOC_COLORS["morning_room"]}
 
-    fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.8), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=figsize("double", aspect=0.5),
+                             sharey=True)
 
     for ax, loc in zip(axes, locations):
         sub = df[df["location"] == loc].copy()
@@ -745,30 +751,29 @@ def _fig_cross_burn(df: pd.DataFrame, fig_dir: Path) -> None:
             lo = row["mass_lower_low"]
             hi = row["mass_upper_high"]
             ax.vlines(x, lo, hi, color=loc_color[loc], lw=8, alpha=0.45)
-            ax.plot(x, row["mass_lower_low"], "_", color=loc_color[loc], markersize=14)
-            ax.plot(x, row["mass_upper_high"], "_", color=loc_color[loc], markersize=14)
+            ax.plot(x, lo, "_", color=loc_color[loc], markersize=14)
+            ax.plot(x, hi, "_", color=loc_color[loc], markersize=14)
+            # Annotate the bracket endpoints so they are readable.
+            ax.annotate(f"{hi:.0f}", xy=(x, hi), xytext=(6, 2),
+                        textcoords="offset points", fontsize=_FS - 3,
+                        color=loc_color[loc], va="bottom")
+            ax.annotate(f"{lo:.0f}", xy=(x, lo), xytext=(6, -2),
+                        textcoords="offset points", fontsize=_FS - 3,
+                        color=loc_color[loc], va="top")
         ax.set_yscale("log")
         ax.set_xticks(xs)
         ax.set_xticklabels([str(x) for x in xs], fontsize=_FS)
-        ax.set_xlabel("Burn number", fontsize=_FS, fontweight="bold")
-        ax.set_title(loc_labels[loc], fontsize=_FS, fontweight="bold")
+        ax.set_xlim(min(xs) - 0.8, max(xs) + 0.8)
+        ax.set_xlabel("Burn number", fontsize=_FS)
+        ax.set_title(loc_labels[loc], fontsize=_FS)
         ax.tick_params(labelsize=_FS)
         ax.grid(axis="y", ls=":", alpha=0.4)
 
-    axes[0].set_ylabel(
-        "Corrected PM mass bracket (µg/m³)", fontsize=_FS, fontweight="bold"
-    )
-    fig.suptitle(
-        "Corrected PM mass bracket per burn (lower_low to upper_high)",
-        fontsize=_FS, fontweight="bold",
-    )
-    fig.tight_layout()
+    axes[0].set_ylabel("Corrected PM mass bracket (µg/m³)", fontsize=_FS)
+    fig.suptitle("Corrected PM mass bracket per burn (lower_low to upper_high)",
+                 fontsize=_FS)
 
-    fig_dir.mkdir(parents=True, exist_ok=True)
-    path = fig_dir / "bracketing_cross_burn.png"
-    fig.savefig(path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"    [fig] {path.name}")
+    save_fig(fig, fig_dir / "bracketing_cross_burn.png")
 
 
 # ==============================================================================
@@ -795,7 +800,7 @@ def _write_summary_md(df: pd.DataFrame, summary: dict, out_dir: Path) -> None:
         "For each qualifying burn-location pair (co-located DustTrak and "
         "AeroTrak), the true peak PM mass concentration is bracketed between a "
         "DustTrak-derived upper bound (raw reading divided by literature "
-        "biomass-smoke correction factors of 1.5 to 4) and an AeroTrak-derived "
+        "biomass-smoke correction factors of 1.6 to 4) and an AeroTrak-derived "
         "lower bound (PM3 reading multiplied by a unit-density correction of "
         "1.2 to 1.5). No coincidence-loss correction is applied to the AeroTrak: "
         "the Poisson model gives L < 0.1% at observed peak count concentrations, "
@@ -891,7 +896,7 @@ def _write_manuscript_md(df: pd.DataFrame, summary: dict, example: dict, out_dir
     )
     s2 = (
         f"Applying the literature range of biomass-smoke DustTrak correction "
-        f"factors (1.5 to 4) to the DustTrak reading of approximately "
+        f"factors (1.6 to 4) to the DustTrak reading of approximately "
         f"{_fmt(example['dusttrak_ug'])} ug/m3 yields a corrected upper-bound "
         f"estimate of approximately {_fmt(example['mass_upper_low'])} ug/m3 to "
         f"{_fmt(example['mass_upper_high'])} ug/m3."
@@ -1028,6 +1033,7 @@ def _write_manuscript_md(df: pd.DataFrame, summary: dict, example: dict, out_dir
 def main() -> None:
     """Run the full bracketing pipeline and write all outputs."""
     warnings.filterwarnings("ignore", category=FutureWarning)
+    apply_est_style()
 
     out_dir = get_common_file("bracketing_analysis")
     fig_dir = get_common_file("bracketing_figures")
@@ -1069,6 +1075,27 @@ def main() -> None:
     )
     sens = _sensitivity(example)
     _write_sensitivity(sens, out_dir)
+
+    # OLD vs NEW comparison table for the 1.5 -> 1.6 low-end correction-factor
+    # change (the only correctness edit this pass). OLD values are the
+    # pre-change CSV figures, computed here as DustTrak/1.5 for direct
+    # comparison so the draft 3.2.4 numbers can be updated.
+    ex_dt = example["dusttrak_ug"]
+    ex_ll = example["mass_lower_low"]
+    old_uh = ex_dt / 1.5
+    new_uh = example["mass_upper_high"]
+    old_spread = old_uh / ex_ll if ex_ll > 0 else np.nan
+    new_spread = example["spread_corrected"]
+    print("\nOLD vs NEW (CF low end 1.5 -> 1.6):")
+    print(f"  Burn 09 mass_upper_high : {old_uh:.0f} -> {new_uh:.0f} ug/m3")
+    print(f"  Burn 09 spread_corrected: {old_spread:.2f} -> {new_spread:.2f}")
+    print(
+        f"  cross-burn corrected spread (median/min/max): "
+        f"~5.93/4.58/8.54 -> "
+        f"{summary['spread_corrected_median']:.2f}/"
+        f"{summary['spread_corrected_min']:.2f}/"
+        f"{summary['spread_corrected_max']:.2f}"
+    )
 
     print("\nWriting figures...")
     _fig_burn09_bars(example, fig_dir)

@@ -62,6 +62,14 @@ from src.aerotrak_coincidence import (  # noqa: E402
     _smps_300_437,
 )
 from src.data_paths import get_common_file  # noqa: E402
+from src.fig_style import (  # noqa: E402
+    REF_LINE,
+    ROLE_COLORS,
+    UNIT_COLORS,
+    apply_est_style,
+    figsize,
+    save_fig,
+)
 from src.modulair_5sec_io import (  # noqa: E402
     BURN_DATES,
     OPC_BIN_EDGES_UM,
@@ -124,22 +132,14 @@ PEAK_CSV = "modulair_5sec_peak_per_burn.csv"
 # PM2.5-bias cross-check (Bedroom 2 only).
 SMPS_LO_NM, SMPS_HI_NM = 300.0, 437.0
 
-# Matplotlib TEXT_CONFIG (project convention).
-TEXT_CONFIG = {
-    "font_size": "12pt",
-    "title_font_size": "12pt",
-    "axis_label_font_size": "12pt",
-    "axis_tick_font_size": "12pt",
-    "legend_font_size": "12pt",
-    "plot_font_style": "bold",
-    "font_style": "normal",
-}
-_FS = 12  # numeric point size for matplotlib
+# Numeric point size for matplotlib calls (matches src.fig_style BASE_FONT_PT).
+_FS = 12
 
-# Per-unit plot colors (match the peak-window and coincidence figures).
-UNIT_COLOR = {"MODULAIR-PM1": "#003f5c", "MODULAIR-PM2": "#ef5675"}
-AEROTRAK_COLOR = "#444444"
-SMPS_COLOR = "#ffa600"
+# Per-unit and reference-instrument colors from the shared colorblind-safe
+# palette (bedroom blue, morning room vermillion, AeroTrak black, SMPS orange).
+UNIT_COLOR = dict(UNIT_COLORS)
+AEROTRAK_COLOR = ROLE_COLORS["AeroTrak"]
+SMPS_COLOR = ROLE_COLORS["SMPS"]
 
 
 # ==============================================================================
@@ -598,6 +598,48 @@ def _spearman(x: np.ndarray, y: np.ndarray) -> tuple:
     return float(rho), float(p)
 
 
+def _bias_factor_rows(results: list) -> list:
+    """
+    Multi-burn post-peak PM2.5-bias factor, one row per qualifying Bedroom 2 pair.
+
+    The SMPS 300-437 nm channel is the only same-size reference that is
+    mechanistically independent of the OPC scattering artifact (the co-located
+    AeroTrak Ch1 shares the same OPC reversal/inversion behavior and is therefore
+    NOT a valid reference). The SMPS is deployed in Bedroom 2 only, so the bias
+    factor is quantified there. The factor is opc_bin0_ratio_2.0h /
+    smps_ref_ratio_2.0h: how much more elevated the OPC-N3 small bin is than the
+    SMPS at +2 h, both relative to their t_peak_end value.
+
+    The qualifying condition is "Bedroom 2 pair with a defined peak window and a
+    co-located SMPS", NOT inversion presence: the Bedroom 2 OPC-N3 bin 0 decays
+    rather than inverting, but it still reads high relative to the SMPS, which is
+    the PM2.5-bias point.
+
+    Returns
+    -------
+    list of dict
+        Rows with keys burn, unit, location, opc_ratio, ref_ratio, ref_source
+        ("SMPS"), factor. Only pairs with a positive finite SMPS ratio and a
+        finite OPC ratio are included.
+    """
+    rows = []
+    for r in results:
+        if r.get("location") != "bedroom2" or not r.get("smps_available"):
+            continue
+        if pd.isna(r.get("t_peak_end")):
+            continue
+        opc = r.get("opc_bin0_ratio_2.0h", np.nan)
+        smps = r.get("smps_ref_ratio_2.0h", np.nan)
+        if not (np.isfinite(opc) and np.isfinite(smps) and smps > 0):
+            continue
+        rows.append(dict(
+            burn=r["burn"], unit=r["unit"], location=r["location"],
+            opc_ratio=float(opc), ref_ratio=float(smps), ref_source="SMPS",
+            factor=float(opc) / float(smps),
+        ))
+    return rows
+
+
 def _write_cross_burn_csv(results: list, peak_mass: pd.DataFrame, out_dir: Path) -> dict:
     """
     Write modulair_5sec_post_peak_cross_burn_summary.csv and return the summary
@@ -636,6 +678,14 @@ def _write_cross_burn_csv(results: list, peak_mass: pd.DataFrame, out_dir: Path)
         mvec.append(mass)
     rho, pval = _spearman(np.array(mvec, dtype=float), np.array(dvec, dtype=float))
 
+    # Multi-burn post-peak PM2.5-bias factor (OPC-N3 bin0 +2 h ratio relative to
+    # the SMPS 300-437 nm +2 h ratio, Bedroom 2 only; the SMPS is the only
+    # mechanistically independent same-size reference).
+    bias_rows = _bias_factor_rows(present)
+    factors = np.array([row["factor"] for row in bias_rows], dtype=float)
+    factors = factors[np.isfinite(factors)]
+    n_smps_ref = sum(1 for row in bias_rows if row["ref_source"] == "SMPS")
+
     summary = dict(
         n_pairs_tested=n_tested,
         n_inversion_present=n_inv,
@@ -657,6 +707,13 @@ def _write_cross_burn_csv(results: list, peak_mass: pd.DataFrame, out_dir: Path)
         sat_and_no_inv=len(sat) - len(sat_inv),
         unsat_and_inv=len(unsat_inv),
         unsat_and_no_inv=len(unsat) - len(unsat_inv),
+        # Multi-burn PM2.5-bias factor at +2 h (OPC-N3 bin0 ratio over the SMPS
+        # 300-437 nm ratio), Bedroom 2 pairs with a co-located SMPS.
+        pm25_bias_n=int(factors.size),
+        pm25_bias_factor_median=float(np.median(factors)) if factors.size else np.nan,
+        pm25_bias_factor_min=float(np.min(factors)) if factors.size else np.nan,
+        pm25_bias_factor_max=float(np.max(factors)) if factors.size else np.nan,
+        pm25_bias_n_smps_ref=n_smps_ref,
     )
     path = out_dir / "modulair_5sec_post_peak_cross_burn_summary.csv"
     pd.DataFrame([summary]).to_csv(path, index=False, float_format="%.4g")
@@ -796,9 +853,11 @@ def _normalized_trace(ts, vals, t0, t_end):
 
 def _mpl_small_multiples(results: list, fig_dir: Path) -> None:
     """
-    One panel per burn-unit pair with an inversion: OPC-N3 bin 0 normalized to
-    its value at t_peak_end vs co-located AeroTrak Ch1 normalized to its value
-    at t_peak_end. x = hours since t_peak_end, log y. Intended for the SI.
+    Figure S4 (SI): one panel per burn-unit pair with an inversion. OPC-N3 bin 0
+    normalized to its value at t_peak_end (solid) vs the co-located AeroTrak Ch1
+    normalized to its value at t_peak_end (dashed). x = hours since t_peak_end,
+    log y. Shared bottom x-label and left y-label; 12 pt fonts via the shared
+    style; one figure-level legend.
     """
     pairs = [r for r in results if r.get("inversion_present")]
     pairs = sorted(pairs, key=lambda r: (int(r["burn"].replace("burn", "")), r["unit"]))
@@ -808,8 +867,9 @@ def _mpl_small_multiples(results: list, fig_dir: Path) -> None:
 
     ncols = 3
     nrows = int(np.ceil(len(pairs) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(5.0 * ncols, 3.6 * nrows),
-                             constrained_layout=True)
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(figsize("double")[0], 2.4 * nrows),
+                             sharex=True, sharey=True)
     axes = np.array(axes).flatten()
 
     for ax_idx, rec in enumerate(pairs):
@@ -826,31 +886,29 @@ def _mpl_small_multiples(results: list, fig_dir: Path) -> None:
         if x_at is not None:
             ax.semilogy(x_at, y_at, color=AEROTRAK_COLOR, lw=1.1, ls="--",
                         label="AeroTrak Ch1", alpha=0.9)
-        ax.axhline(1.0, color="black", lw=0.7, ls=":")
-        ax.set_xlabel("hours since t_peak_end", fontsize=_FS)
-        ax.set_ylabel("count / count at t_peak_end", fontsize=_FS)
-        ax.tick_params(labelsize=_FS)
+        ax.axhline(1.0, color=REF_LINE, lw=0.7, ls=":")
+        ax.tick_params(labelsize=_FS - 2)
         tag = "Bdrm" if rec["unit"] == "MODULAIR-PM1" else "MR"
         sat = "sat" if rec["saturated"] else "no-sat"
-        ax.set_title(f"{rec['burn']} {tag} ({sat})", fontsize=_FS, fontweight="bold")
+        ax.set_title(f"{rec['burn']} {tag} ({sat})", fontsize=_FS - 1)
 
     for ax in axes[len(pairs):]:
         ax.set_visible(False)
 
+    fig.supxlabel("Hours since end of peak window", fontsize=_FS)
+    fig.supylabel("count / count at t_peak_end", fontsize=_FS)
+
     from matplotlib.lines import Line2D
     handles = [
-        Line2D([0], [0], color="#003f5c", lw=1.5, label="OPC-N3 bin0 (normalized)"),
-        Line2D([0], [0], color=AEROTRAK_COLOR, lw=1.5, ls="--", label="AeroTrak Ch1 (normalized)"),
-        Line2D([0], [0], color="black", lw=0.7, ls=":", label="ratio = 1"),
+        Line2D([0], [0], color="#555555", lw=1.5, label="OPC-N3 bin0 (normalized)"),
+        Line2D([0], [0], color=AEROTRAK_COLOR, lw=1.5, ls="--",
+               label="AeroTrak Ch1 (normalized)"),
+        Line2D([0], [0], color=REF_LINE, lw=0.7, ls=":", label="ratio = 1"),
     ]
-    fig.legend(handles=handles, loc="upper right", bbox_to_anchor=(0.998, 0.78),
-               fontsize=_FS, frameon=True)
+    fig.legend(handles=handles, loc="upper center", ncol=3,
+               fontsize=_FS - 2, frameon=True, bbox_to_anchor=(0.5, 1.02))
 
-    fig_dir.mkdir(parents=True, exist_ok=True)
-    path = fig_dir / "modulair_5sec_post_peak_smallmultiples.png"
-    fig.savefig(path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"    [mpl] {path.name}")
+    save_fig(fig, fig_dir / "modulair_5sec_post_peak_smallmultiples.png")
 
 
 # ==============================================================================
@@ -860,10 +918,10 @@ def _mpl_small_multiples(results: list, fig_dir: Path) -> None:
 
 def _mpl_overlay(results: list, fig_dir: Path) -> None:
     """
-    Single panel, MODULAIR-PM2 (Morning Room) only: OPC-N3 bin 0 normalized to
-    its value at t_peak_end, overlaid across all qualifying (inversion-present)
-    burns. x = hours since t_peak_end, log y, dashed reference at y = 1.
-    Intended for the brief main-text figure.
+    Figure 3 (main text, double column): MODULAIR-PM2 (Morning Room) OPC-N3 bin 0
+    normalized to its value at t_peak_end, overlaid across all qualifying
+    (inversion-present) burns. x = hours since t_peak_end, log y, dashed
+    reference at y = 1.
     """
     pairs = [r for r in results
              if r["unit"] == "MODULAIR-PM2" and r.get("inversion_present")]
@@ -872,7 +930,7 @@ def _mpl_overlay(results: list, fig_dir: Path) -> None:
         print("    [mpl] no MODULAIR-PM2 inversion pairs for overlay.")
         return
 
-    fig, ax = plt.subplots(figsize=(7.5, 5.0))
+    fig, ax = plt.subplots(figsize=figsize("double", aspect=0.55))
     cmap = plt.get_cmap("viridis", max(len(pairs), 2))
     for i, rec in enumerate(pairs):
         x, y = _normalized_trace(rec["_df"]["timestamp"], rec["_df"]["bin0"],
@@ -880,20 +938,15 @@ def _mpl_overlay(results: list, fig_dir: Path) -> None:
         if x is not None:
             ax.semilogy(x, y, color=cmap(i), lw=1.4, alpha=0.85, label=rec["burn"])
 
-    ax.axhline(1.0, color="black", lw=1.0, ls="--", label="value at t_peak_end")
-    ax.set_xlabel("Hours since end of peak window", fontsize=_FS, fontweight="bold")
-    ax.set_ylabel("OPC-N3 bin0 count / value at t_peak_end",
-                  fontsize=_FS, fontweight="bold")
+    ax.axhline(1.0, color=REF_LINE, lw=1.0, ls="--", label="value at t_peak_end")
+    ax.set_xlabel("Hours since end of peak window", fontsize=_FS)
+    ax.set_ylabel("OPC-N3 bin0 count / value at t_peak_end", fontsize=_FS)
     ax.tick_params(labelsize=_FS)
     ax.set_title("MODULAIR-PM2 (Morning Room): OPC-N3 bin0 post-peak inversion",
-                 fontsize=_FS, fontweight="bold")
-    ax.legend(fontsize=_FS, ncol=2, loc="upper right")
+                 fontsize=_FS)
+    ax.legend(fontsize=_FS - 2, ncol=2, loc="upper right")
 
-    fig_dir.mkdir(parents=True, exist_ok=True)
-    path = fig_dir / "modulair_5sec_post_peak_overlay.png"
-    fig.savefig(path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"    [mpl] {path.name}")
+    save_fig(fig, fig_dir / "modulair_5sec_post_peak_overlay.png")
 
 
 # ==============================================================================
@@ -903,47 +956,61 @@ def _mpl_overlay(results: list, fig_dir: Path) -> None:
 
 def _mpl_pm25_bias(results: list, fig_dir: Path) -> None:
     """
-    Bar chart (Bedroom 2 burns with SMPS only): at + 2 h, OPC-N3 bin-0 count
-    ratio (count / count at t_peak_end) vs SMPS 300-437 nm number-concentration
-    ratio over the same interval. A bar pair per burn shows how far the OPC-N3
-    small-bin count is elevated relative to the SMPS reference at + 2 h.
+    Figure S5 (SI), multi-burn: for every Bedroom 2 pair with a co-located SMPS,
+    the OPC-N3 bin-0 +2 h count ratio (count / count at t_peak_end) beside the
+    SMPS 300-437 nm +2 h ratio. The SMPS is the only same-size reference that is
+    mechanistically independent of the OPC scattering artifact (the co-located
+    AeroTrak Ch1 shares the same OPC reversal behavior and is not used as a
+    reference). A dashed line at ratio = 1 marks the end-of-peak value; the OPC /
+    SMPS factor is annotated above each pair.
+
+    The figure conveys that the OPC-N3 small-bin count stays elevated at +2 h
+    relative to the independent SMPS reference, so the portal PM2.5 (derived in
+    part from the OPC-N3 counts) is biased high post-peak. Morning Room has no
+    co-located SMPS and therefore no valid reference, so the bias is quantified
+    in Bedroom 2 only. No mechanism is proposed.
     """
-    pairs = [r for r in results
-             if r["location"] == "bedroom2" and r.get("smps_available")
-             and r.get("inversion_present")]
-    pairs = sorted(pairs, key=lambda r: int(r["burn"].replace("burn", "")))
-    if not pairs:
-        print("    [mpl] no Bedroom 2 SMPS inversion pairs for PM2.5 bias chart.")
+    present = [r for r in results
+               if r.get("data_present") and pd.notna(r.get("t_peak_end"))]
+    rows = _bias_factor_rows(present)
+    rows = sorted(rows, key=lambda d: int(d["burn"].replace("burn", "")))
+    if not rows:
+        print("    [mpl] no Bedroom 2 SMPS pairs for PM2.5 bias chart.")
         return
 
-    labels, opc_r, smps_r = [], [], []
-    for rec in pairs:
-        labels.append(rec["burn"])
-        opc_r.append(rec.get("opc_bin0_ratio_2.0h", np.nan))
-        smps_r.append(rec.get("smps_ref_ratio_2.0h", np.nan))
+    labels = [f"{d['burn']}\nPM1 / Bdrm" for d in rows]
+    opc_r = [d["opc_ratio"] for d in rows]
+    smps_r = [d["ref_ratio"] for d in rows]
+    factors = [d["factor"] for d in rows]
 
-    x = np.arange(len(pairs))
+    x = np.arange(len(rows))
     w = 0.38
-    fig, ax = plt.subplots(figsize=(max(6.0, 1.4 * len(pairs)), 5.0))
-    ax.bar(x - w / 2, opc_r, w, label="OPC-N3 bin0 (count / t_peak_end)",
-           color="#003f5c", alpha=0.85)
-    ax.bar(x + w / 2, smps_r, w, label="SMPS 300-437 nm (count / t_peak_end)",
-           color=SMPS_COLOR, alpha=0.85)
-    ax.axhline(1.0, color="black", lw=0.8, ls=":")
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=_FS)
-    ax.set_ylabel("Count ratio at + 2 h (relative to t_peak_end)",
-                  fontsize=_FS, fontweight="bold")
-    ax.set_title("Bedroom 2: OPC-N3 small-bin vs SMPS at + 2 h",
-                 fontsize=_FS, fontweight="bold")
-    ax.tick_params(labelsize=_FS)
-    ax.legend(fontsize=_FS)
+    fig, ax = plt.subplots(figsize=(figsize("double")[0], 3.6))
 
-    fig_dir.mkdir(parents=True, exist_ok=True)
-    path = fig_dir / "modulair_5sec_pm25_bias.png"
-    fig.savefig(path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"    [mpl] {path.name}")
+    opc_color = UNIT_COLOR["MODULAIR-PM1"]
+    ax.bar(x - w / 2, opc_r, w, color=opc_color, alpha=0.9,
+           label="OPC-N3 bin0 (count / t_peak_end)")
+    smps_bars = ax.bar(x + w / 2, smps_r, w, color=SMPS_COLOR, alpha=0.85,
+                       label="SMPS 300-437 nm (count / t_peak_end)")
+
+    # Annotate the OPC / SMPS elevation factor above each pair.
+    tops = [max(o, s) for o, s in zip(opc_r, smps_r)]
+    for xi, top, fac in zip(x, tops, factors):
+        ax.annotate(f"{fac:.0f}x", xy=(xi, top), xytext=(0, 3),
+                    textcoords="offset points", ha="center", va="bottom",
+                    fontsize=_FS - 3)
+
+    ax.axhline(1.0, color=REF_LINE, lw=0.9, ls="--")
+    ax.set_yscale("log")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=_FS - 2)
+    ax.set_ylabel("Count ratio at +2 h (relative to t_peak_end)", fontsize=_FS)
+    ax.set_title("Bedroom 2: OPC-N3 small-bin vs SMPS at +2 h post-peak",
+                 fontsize=_FS)
+    ax.tick_params(labelsize=_FS - 1)
+    ax.legend(fontsize=_FS - 2, ncol=1, loc="upper right")
+
+    save_fig(fig, fig_dir / "modulair_5sec_pm25_bias.png")
 
 
 # ==============================================================================
@@ -1062,35 +1129,6 @@ def _write_summary_md(results: list, summary: dict, out_dir: Path) -> None:
     print(f"    [MD] {path.name}")
 
 
-def _pm25_bias_stats(results: list) -> dict:
-    """
-    Implication for the portal PM2.5 product (step 4). For Bedroom 2 pairs with
-    SMPS, compute the OPC-N3-implied small-bin elevation relative to SMPS at
-    + 2 h: the factor by which the OPC-N3 bin-0 count ratio exceeds the SMPS
-    300-437 nm ratio (both relative to their t_peak_end value).
-
-    Returns median/min/max of that factor across qualifying Bedroom 2 burns.
-    """
-    factors = []
-    for r in results:
-        if r.get("location") != "bedroom2" or not r.get("smps_available"):
-            continue
-        if not r.get("inversion_present"):
-            continue
-        opc = r.get("opc_bin0_ratio_2.0h", np.nan)
-        smps = r.get("smps_ref_ratio_2.0h", np.nan)
-        if np.isfinite(opc) and np.isfinite(smps) and smps > 0:
-            factors.append(opc / smps)
-    arr = np.array(factors, dtype=float)
-    arr = arr[np.isfinite(arr)]
-    return dict(
-        n=int(arr.size),
-        median=float(np.median(arr)) if arr.size else np.nan,
-        min=float(np.min(arr)) if arr.size else np.nan,
-        max=float(np.max(arr)) if arr.size else np.nan,
-    )
-
-
 def _write_manuscript_md(results: list, summary: dict, out_dir: Path) -> None:
     """
     Write the brief main-text mention and the full SI subsection for the
@@ -1109,40 +1147,38 @@ def _write_manuscript_md(results: list, summary: dict, out_dir: Path) -> None:
     dur_min = summary["bin0_inversion_duration_min_h"]
     dur_max = summary["bin0_inversion_duration_max_h"]
 
-    bias = _pm25_bias_stats(results)
-    # If no SMPS-based factor is available (all qualifying inversions are
-    # Morning Room, which has no co-located SMPS), fall back to the
-    # OPC-vs-AeroTrak +2h ratio as the reference elevation factor.
-    if bias["n"] == 0:
-        at_factors = np.array(
-            [r.get("opc_ratio_vs_aerotrak_2.0h", np.nan) for r in present
-             if r.get("inversion_present")], dtype=float)
-        at_factors = at_factors[np.isfinite(at_factors)]
-        bias = dict(
-            n=int(at_factors.size),
-            median=float(np.median(at_factors)) if at_factors.size else np.nan,
-            min=float(np.min(at_factors)) if at_factors.size else np.nan,
-            max=float(np.max(at_factors)) if at_factors.size else np.nan,
-        )
-        bias_ref = "co-located AeroTrak Ch1"
-    else:
-        bias_ref = "co-located SMPS 300-437 nm"
+    # Multi-burn PM2.5-bias factor at +2 h: OPC-N3 bin0 ratio over the SMPS
+    # 300-437 nm ratio, Bedroom 2 pairs with a co-located SMPS. The SMPS is the
+    # only mechanistically independent same-size reference; the AeroTrak Ch1
+    # shares the OPC artifact and is not used. This supersedes the earlier
+    # single-Bedroom-2-burn framing and is independent of inversion presence.
+    bias_rows = _bias_factor_rows(present)
+    factors = np.array([row["factor"] for row in bias_rows], dtype=float)
+    factors = factors[np.isfinite(factors)]
+    n_smps = len(bias_rows)
+    bias = dict(
+        n=int(factors.size),
+        median=float(np.median(factors)) if factors.size else np.nan,
+        min=float(np.min(factors)) if factors.size else np.nan,
+        max=float(np.max(factors)) if factors.size else np.nan,
+    )
+    bias_ref = "co-located SMPS 300-437 nm reference"
 
-    # Phrase the bias factor honestly: a single qualifying burn gives one value,
-    # not a median over a distribution.
+    # Phrase the bias factor honestly: one value for a single qualifying pair,
+    # a median over a range for several.
     if bias["n"] == 1:
         bias_clause = (
             f"by a factor of approximately {_fmt(bias['median'], '.0f')} "
-            f"(in the single qualifying burn)"
+            f"(the single qualifying Bedroom 2 pair)"
         )
     elif bias["n"] >= 2:
         bias_clause = (
             f"by a factor of approximately {_fmt(bias['median'], '.0f')} "
-            f"(median across {bias['n']} burns; range {_fmt(bias['min'], '.0f')} "
-            f"to {_fmt(bias['max'], '.0f')})"
+            f"(median across {bias['n']} Bedroom 2 pairs with a co-located SMPS; "
+            f"range {_fmt(bias['min'], '.0f')} to {_fmt(bias['max'], '.0f')})"
         )
     else:
-        bias_clause = "by an undetermined factor (no qualifying reference data)"
+        bias_clause = "by an undetermined factor (no qualifying SMPS reference data)"
 
     # Opening observation (saturated framing, per the prompt template).
     s_open = (
@@ -1159,22 +1195,23 @@ def _write_manuscript_md(results: list, summary: dict, out_dir: Path) -> None:
         f"(range {_fmt(dur_min, '.1f')} to {_fmt(dur_max, '.1f')}) after the peak "
         f"window, during which the OPC-N3 bin 0 count rises to a median of "
         f"{_fmt(pr_med, '.0f')} times its value at the end of the peak window "
-        f"(range {_fmt(pr_min, '.0f')} to {_fmt(pr_max, '.0f')}) while the "
-        f"co-located AeroTrak Ch1 count decays monotonically."
+        f"(range {_fmt(pr_min, '.0f')} to {_fmt(pr_max, '.0f')})."
     )
     s_impl = (
         f"During the inversion phase, the portal-delivered PM2.5 product likely "
         f"overestimates true small-particle concentration; at the 2-hour mark, "
         f"the OPC-N3-implied bin 0 count is elevated {bias_clause} relative to "
-        f"the {bias_ref} reference."
+        f"the {bias_ref}, the only co-located reference that is mechanistically "
+        f"independent of the OPC scattering artifact."
     )
     s_distinct = (
         f"This post-peak behavior is observationally distinct from the bin "
         f"reversal artifact documented for the AeroTrak in Section 3.2.2: the "
-        f"OPC-N3 inversion persists for hours rather than minutes, it produces an "
-        f"INCREASE rather than a decrease in small-bin counts, and it occurs only "
-        f"in the OPC-N3 channel: the AeroTrak and SMPS show no corresponding "
-        f"anomaly during the same post-peak window."
+        f"OPC-N3 inversion persists for hours rather than minutes and produces an "
+        f"INCREASE rather than a decrease in small-bin counts. It is confined to "
+        f"the optical particle counters: the SMPS, which classifies particles by "
+        f"electrical mobility and is mechanistically independent of optical "
+        f"artifacts, shows no corresponding rise over the same post-peak window."
     )
 
     # Mechanism statement, with the saturation-association clause only if the
@@ -1207,12 +1244,14 @@ def _write_manuscript_md(results: list, summary: dict, out_dir: Path) -> None:
     n_tested = summary["n_pairs_tested"]
     para_main = (
         f"The 5 s OPC-N3 records reveal a second anomaly during the post-peak "
-        f"decay phase: in {n_inv} of {n_tested} burn-unit pairs the smallest "
-        f"OPC-N3 bins ({BIN0_LABEL} and {BIN1_LABEL}) increase in count as the "
-        f"smoke clears, opposite to the monotonic decay of the co-located "
-        f"AeroTrak and (Bedroom 2) SMPS over the same size range. The bin 0 count "
+        f"decay phase: in {n_inv} of {n_tested} burn-unit pairs (all Morning "
+        f"Room) the smallest OPC-N3 bins ({BIN0_LABEL} and {BIN1_LABEL}) increase "
+        f"in count as the smoke clears. The bin 0 count "
         f"rises to a median of {_fmt(pr_med, '.0f')} times its end-of-peak value "
         f"and the inversion persists for a median of {_fmt(dur_med, '.1f')} hours. "
+        f"In Bedroom 2, where a co-located SMPS provides a same-size reference "
+        f"that is independent of the OPC scattering artifact, the OPC-N3 bin 0 "
+        f"reads elevated {bias_clause} relative to the SMPS at + 2 h. "
         f"Because the portal PM2.5 product is derived in part from these OPC-N3 "
         f"counts, the delivered PM2.5 likely overestimates true small-particle "
         f"concentration for an extended period after the peak. The full "
@@ -1241,16 +1280,18 @@ def _write_manuscript_md(results: list, summary: dict, out_dir: Path) -> None:
         f"{_fmt(pr_med, '.0f')} times its t_peak_end value (range "
         f"{_fmt(pr_min, '.0f')} to {_fmt(pr_max, '.0f')}) and the inversion "
         f"persisted for a median of {_fmt(dur_med, '.1f')} hours (range "
-        f"{_fmt(dur_min, '.1f')} to {_fmt(dur_max, '.1f')}). Over the same decay "
-        f"window the co-located AeroTrak Ch1 (0.3-0.5 um) count decayed "
-        f"monotonically; at + 2 h the OPC-N3 bin 0 count ratio exceeded the "
-        f"AeroTrak Ch1 ratio in every inverted pair. Where an SMPS was available "
-        f"(Bedroom 2), the 300-437 nm number concentration also decayed "
-        f"monotonically and showed no corresponding rise; at + 2 h the "
-        f"OPC-N3-implied small-bin count was elevated {bias_clause} relative to "
-        f"the {bias_ref}. Morning Room "
-        f"pairs have no co-located SMPS and were cross-checked against the "
-        f"AeroTrak only. Spearman rho between bin-0 inversion duration and "
+        f"{_fmt(dur_min, '.1f')} to {_fmt(dur_max, '.1f')}). The co-located "
+        f"AeroTrak Ch1 (0.3-0.5 um) is an OPC that shares the same scattering "
+        f"artifact characterized in Section 3.2.2 and is therefore shown as a "
+        f"qualitative companion (Figure S4) rather than an independent reference. "
+        f"The only same-size reference that is mechanistically independent of the "
+        f"OPC artifact is the SMPS 300-437 nm channel, which is deployed in "
+        f"Bedroom 2 only. Across the {n_smps} Bedroom 2 pairs with a co-located "
+        f"SMPS, the OPC-N3 bin 0 + 2 h count ratio was elevated {bias_clause} "
+        f"relative to the SMPS 300-437 nm ratio (Figure S5), so the portal PM2.5 "
+        f"reads high relative to the independent reference. Morning Room has no "
+        f"co-located SMPS and therefore no valid reference for the bias. "
+        f"Spearman rho between bin-0 inversion duration and "
         f"co-located peak AeroTrak PM3 mass was {_fmt(rho, '.2f')} "
         f"(p = {_fmt(pval, '.3f')}). The inversion is observationally distinct "
         f"from the AeroTrak bin reversal of Section 3.2.2 (hours not minutes, an "
@@ -1290,6 +1331,7 @@ def _write_manuscript_md(results: list, summary: dict, out_dir: Path) -> None:
 def main() -> None:
     """Run the full post-peak inversion analysis: load, analyze, write outputs."""
     warnings.filterwarnings("ignore")
+    apply_est_style()
     print("\n" + "=" * 70)
     print("MODULAIR-PM 5 s post-peak OPC-N3 inversion  -  Burns 4-10")
     print("=" * 70)

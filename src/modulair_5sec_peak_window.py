@@ -47,6 +47,16 @@ from bokeh.plotting import figure  # noqa: E402
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
 from src.data_paths import get_common_file  # noqa: E402
+from src.fig_style import (  # noqa: E402
+    REF_LINE,
+    ROLE_COLORS,
+    SHADE,
+    SHADE_ALPHA,
+    UNIT_COLORS,
+    apply_est_style,
+    figsize,
+    save_fig,
+)
 from src.modulair_5sec_io import (  # noqa: E402
     BEDROOM_SEALED_BURNS,
     BURN_DATES,
@@ -144,13 +154,12 @@ QAQC_GAP_MIN = 3         # grow the block across gaps up to this many minutes
 # Co-located AeroTrak coincidence CSV (peak PM3 mass + Ch1 reversal interval).
 AEROTRAK_CSV = "aerotrak_coincidence_per_burn.csv"
 
-# Matplotlib TEXT_CONFIG (project convention).
+# Numeric point size for matplotlib calls (matches src.fig_style BASE_FONT_PT).
 _FS = 12
-TEXT_CONFIG = dict(fontsize=_FS, labelsize=_FS, ticksize=_FS, legendsize=_FS)
 
-# Per-unit plot colors (bedroom dark blue, morning room pink, matching the
-# AeroTrak coincidence figures).
-UNIT_COLOR = {"MODULAIR-PM1": "#003f5c", "MODULAIR-PM2": "#ef5675"}
+# Per-unit plot colors from the shared colorblind-safe palette (bedroom blue,
+# morning room vermillion).
+UNIT_COLOR = dict(UNIT_COLORS)
 
 
 # ==============================================================================
@@ -510,9 +519,15 @@ def _opc_response(
     -------
     dict
         ratio_bin{i}, class_bin{i}, pre_count_bin{i}, peak_count_bin{i} for the
-        three smallest bins, plus 'all_ratios' (list aligned with OPC_BINS).
+        three smallest bins, plus 'all_ratios' (list aligned with OPC_BINS) and
+        'pre_profile'/'peak_profile' (lists of mean pre-peak and median
+        peak-window counts across all OPC_BINS, for the absolute-count grid).
     """
-    out: dict = {"all_ratios": [np.nan] * len(OPC_BINS)}
+    out: dict = {
+        "all_ratios": [np.nan] * len(OPC_BINS),
+        "pre_profile": [np.nan] * len(OPC_BINS),
+        "peak_profile": [np.nan] * len(OPC_BINS),
+    }
     for b in OPC_SMALL_BINS:
         out[f"ratio_{b}"] = np.nan
         out[f"class_{b}"] = "no_data"
@@ -542,6 +557,12 @@ def _opc_response(
         col = pd.to_numeric(df[b], errors="coerce")
         pre_mean = float(col[pre_mask].mean())
         peak_med = float(col[peak_mask].median())
+        # Absolute count profiles for the bin-response grid (Figure S3): the
+        # pre-peak baseline mean and the peak-window median per bin, plotted
+        # directly so bin 0 suppression and the larger-bin rise are both
+        # visible without dividing by a near-zero pre-fire denominator.
+        out["pre_profile"][i] = pre_mean
+        out["peak_profile"][i] = peak_med
         # Guard against a near-zero baseline (bin1/bin2 pre-fire counts ~0):
         # a ratio there is not meaningful, so leave it NaN.
         ratio = (
@@ -804,6 +825,7 @@ def analyze_pair(
         # private
         _df=df, _portal=portal, _ignition=ignition, _garage=garage,
         _pac_on=pac_on, _opc_all_ratios=opc["all_ratios"],
+        _opc_pre_profile=opc["pre_profile"], _opc_peak_profile=opc["peak_profile"],
     )
     return rec
 
@@ -931,85 +953,93 @@ def _bokeh_pair(rec: dict, t_pad_min: float = 30.0) -> None:
 
 def _mpl_bin_response_grid(results: list[dict]) -> None:
     """
-    One panel per burn: x = OPC-N3 bin lower edge (um), y = peak/pre ratio
-    (log). Horizontal references at y = 1 and y = 0.5. Both indoor units
-    overlaid in different colors. Intended for the SI.
+    Figure S3 (SI): per burn-unit panel, absolute OPC-N3 count concentration
+    per bin for the pre-peak baseline and for the peak window, versus bin lower
+    edge (log-log). Plotting absolute counts (not a peak/pre ratio) makes the
+    bin 0 suppression and the rise of the larger bins both visible without
+    dividing by a near-zero pre-fire denominator.
+
+    One panel per burn-unit pair that produced a peak window; panels without a
+    window are dropped (not left empty) and reported in the run log. Bin 0
+    (0.35-0.46 um) is marked with a vertical guide. Shared bottom x-label and
+    left y-label; constrained layout prevents clipped axis labels.
     """
-    bin_lower = [lo for (lo, _hi) in OPC_BIN_EDGES_UM]
-    burns = sorted(
-        {r["burn"] for r in results if r.get("data_present")},
-        key=lambda b: int(b.replace("burn", "")),
-    )
-    if not burns:
-        print("    [mpl] no data for bin-response grid.")
+    bin_lower = np.array([lo for (lo, _hi) in OPC_BIN_EDGES_UM], dtype=float)
+
+    # Panels = burn-unit pairs with a peak window and a usable count profile.
+    panels = []
+    dropped = []
+    for r in results:
+        if not r.get("data_present") or pd.isna(r.get("t_peak_end")):
+            dropped.append((r["burn"], r["unit"], "no peak window"))
+            continue
+        pre = np.array(r.get("_opc_pre_profile") or [], dtype=float)
+        peak = np.array(r.get("_opc_peak_profile") or [], dtype=float)
+        if pre.size == 0 or peak.size == 0 or not (
+            np.isfinite(pre).any() and np.isfinite(peak).any()
+        ):
+            dropped.append((r["burn"], r["unit"], "no count profile"))
+            continue
+        panels.append(r)
+
+    if not panels:
+        print("    [mpl] no panels with count profiles for bin-response grid.")
         return
 
+    panels = sorted(panels, key=lambda r: (int(r["burn"].replace("burn", "")), r["unit"]))
+
     ncols = 3
-    nrows = int(np.ceil(len(burns) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 4.0 * nrows),
-                             constrained_layout=True)
+    nrows = int(np.ceil(len(panels) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(figsize("double")[0],
+                                                    2.3 * nrows),
+                             sharex=True, sharey=True)
     axes = np.array(axes).flatten()
 
-    for ax_idx, burn_id in enumerate(burns):
-        ax = axes[ax_idx]
-        any_positive = False
-        for unit in UNITS:
-            rec = next((r for r in results if r["burn"] == burn_id
-                        and r["unit"] == unit and r.get("data_present")), None)
-            if rec is None:
-                continue
-            ratios = rec.get("_opc_all_ratios")
-            if not ratios:
-                continue
-            vals = np.array(ratios, dtype=float)
-            # Log axis cannot show zero/negative ratios (collapsed bins); mask
-            # them so the line breaks rather than crashing the locator.
-            x = np.array(bin_lower, dtype=float)
-            valid = np.isfinite(vals) & (vals > 0)
-            if not valid.any():
-                continue
-            any_positive = True
-            ax.semilogy(x[valid], vals[valid], marker="o", ms=4, lw=1.0,
-                        color=UNIT_COLOR[unit],
-                        label=UNIT_CONFIG[unit]["location_label"], alpha=0.85)
-        if not any_positive:
-            # No saturating unit for this burn: leave an empty labelled panel
-            # on a linear axis (a log axis with no positive data raises).
-            ax.set_title(f"{burn_id} (no plateau)", fontsize=TEXT_CONFIG["labelsize"],
-                         fontweight="bold")
-            ax.set_xlabel("OPC-N3 bin lower edge (µm)",
-                          fontsize=TEXT_CONFIG["labelsize"])
-            ax.tick_params(labelsize=TEXT_CONFIG["ticksize"])
-            continue
-        ax.axhline(1.0, color="black", lw=0.8, ls="--")
-        ax.axhline(0.5, color="gray", lw=0.8, ls=":")
-        ax.set_xscale("log")
-        ax.set_xlabel("OPC-N3 bin lower edge (µm)", fontsize=TEXT_CONFIG["labelsize"])
-        ax.set_ylabel("peak / pre ratio", fontsize=TEXT_CONFIG["labelsize"])
-        ax.tick_params(labelsize=TEXT_CONFIG["ticksize"])
-        ax.set_title(burn_id, fontsize=TEXT_CONFIG["labelsize"], fontweight="bold")
+    bin0_lo, bin0_hi = OPC_BIN_EDGES_UM[0]
 
-    for ax in axes[len(burns):]:
+    for ax_idx, rec in enumerate(panels):
+        ax = axes[ax_idx]
+        color = UNIT_COLOR[rec["unit"]]
+        pre = np.array(rec["_opc_pre_profile"], dtype=float)
+        peak = np.array(rec["_opc_peak_profile"], dtype=float)
+        # Mask non-positive for the log axis.
+        pre_v = np.where(pre > 0, pre, np.nan)
+        peak_v = np.where(peak > 0, peak, np.nan)
+        ax.loglog(bin_lower, pre_v, marker="o", ms=3, lw=1.0, ls="--",
+                  color=color, alpha=0.8, label="pre-peak")
+        ax.loglog(bin_lower, peak_v, marker="s", ms=3, lw=1.3, ls="-",
+                  color=color, alpha=0.95, label="peak window")
+        # Mark bin 0.
+        ax.axvspan(bin0_lo, bin0_hi, color=SHADE, alpha=0.18, lw=0)
+        tag = "Bdrm" if rec["unit"] == "MODULAIR-PM1" else "MR"
+        sat = "sat" if rec.get("saturated") else "no-sat"
+        ax.set_title(f"{rec['burn']} {tag} ({sat})", fontsize=_FS - 1)
+        ax.tick_params(labelsize=_FS - 2)
+
+    for ax in axes[len(panels):]:
         ax.set_visible(False)
+
+    # Shared axis labels and one legend.
+    fig.supxlabel("OPC-N3 bin lower edge (µm)", fontsize=_FS)
+    fig.supylabel("OPC-N3 count concentration (counts per 5 s)", fontsize=_FS)
 
     from matplotlib.lines import Line2D
     handles = [
-        Line2D([0], [0], color=UNIT_COLOR["MODULAIR-PM1"], marker="o",
+        Line2D([0], [0], color="#555555", marker="o", ls="--", label="pre-peak baseline"),
+        Line2D([0], [0], color="#555555", marker="s", ls="-", label="peak window"),
+        Line2D([0], [0], color=UNIT_COLOR["MODULAIR-PM1"], lw=4,
                label=UNIT_CONFIG["MODULAIR-PM1"]["location_label"]),
-        Line2D([0], [0], color=UNIT_COLOR["MODULAIR-PM2"], marker="o",
+        Line2D([0], [0], color=UNIT_COLOR["MODULAIR-PM2"], lw=4,
                label=UNIT_CONFIG["MODULAIR-PM2"]["location_label"]),
-        Line2D([0], [0], color="black", ls="--", label="ratio = 1"),
-        Line2D([0], [0], color="gray", ls=":", label="ratio = 0.5"),
     ]
-    fig.legend(handles=handles, loc="upper right", bbox_to_anchor=(0.995, 0.7),
-               fontsize=TEXT_CONFIG["legendsize"], frameon=True)
+    fig.legend(handles=handles, loc="upper center", ncol=4,
+               fontsize=_FS - 2, frameon=True, bbox_to_anchor=(0.5, 1.02))
 
     fig_dir = get_common_file("quantaq_figures")
-    fig_dir.mkdir(parents=True, exist_ok=True)
-    out_path = fig_dir / "modulair_5sec_bin_response_grid.png"
-    fig.savefig(str(out_path), dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"    [mpl] {out_path.name}")
+    save_fig(fig, fig_dir / "modulair_5sec_bin_response_grid.png")
+    if dropped:
+        drop_str = ", ".join(f"{b} {u} ({why})" for b, u, why in dropped)
+        print(f"    [mpl] bin-response grid dropped panels: {drop_str}")
 
 
 # ==============================================================================
@@ -1017,12 +1047,90 @@ def _mpl_bin_response_grid(results: list[dict]) -> None:
 # ==============================================================================
 
 
+def _mpl_qaqc_timeseries_burn09(results: list[dict]) -> None:
+    """
+    Figure 2 (main text, double column): Burn 09 MODULAIR-PM2 (Morning Room)
+    5 s time series over the peak window, three aligned-time panels showing
+    that the saturated nephelometer, the suppressed OPC-N3 bin 0, and the
+    portal QA/QC removal interval coincide:
+        (a) PMS5003 neph_bin0 raw with the 65535 ceiling marked;
+        (b) OPC-N3 bin0 raw counts (the suppression);
+        (c) a strip marking the 5 s peak-window span and the portal QA/QC
+            removal interval.
+    """
+    rec = next((r for r in results
+                if r["burn"] == "burn9" and r["unit"] == "MODULAIR-PM2"
+                and r.get("data_present")), None)
+    if rec is None or pd.isna(rec.get("t_peak_start")):
+        print("    [mpl] burn9 MODULAIR-PM2 not available for QA/QC time series.")
+        return
+
+    df = rec["_df"]
+    t0 = rec["t_peak_start"]
+    t1 = rec["t_peak_end"]
+    pad = pd.Timedelta(minutes=8)
+    t_lo, t_hi = t0 - pad, t1 + pad
+    sub = df[(df["timestamp"] >= t_lo) & (df["timestamp"] <= t_hi)].copy()
+    if sub.empty:
+        print("    [mpl] burn9 MODULAIR-PM2 window empty for QA/QC time series.")
+        return
+
+    ts = sub["timestamp"]
+    color = UNIT_COLOR["MODULAIR-PM2"]
+
+    fig, axes = plt.subplots(
+        3, 1, figsize=(figsize("double")[0], 5.4), sharex=True,
+        gridspec_kw={"height_ratios": [3, 3, 0.8]},
+    )
+    ax_neph, ax_opc, ax_strip = axes
+
+    # (a) Nephelometer bin0 with the 16-bit ceiling.
+    ax_neph.plot(ts, pd.to_numeric(sub["neph_bin0"], errors="coerce"),
+                 color=ROLE_COLORS["PMS5003"], lw=1.2)
+    ax_neph.axhline(NEPH_CEILING, color=REF_LINE, ls="--", lw=1.0)
+    ax_neph.annotate("16-bit ceiling (65535)", xy=(ts.iloc[0], NEPH_CEILING),
+                     xytext=(2, -10), textcoords="offset points",
+                     fontsize=_FS - 3, color=REF_LINE, va="top")
+    ax_neph.set_ylabel("PMS5003\nneph bin0", fontsize=_FS - 1)
+    ax_neph.set_title("Burn 09 Morning Room (MODULAIR-PM2): saturated "
+                      "nephelometer, suppressed OPC-N3 bin 0, and portal "
+                      "QA/QC removal coincide", fontsize=_FS - 1)
+
+    # (b) OPC-N3 bin0 suppression.
+    ax_opc.plot(ts, pd.to_numeric(sub["bin0"], errors="coerce"),
+                color=color, lw=1.2)
+    ax_opc.set_ylabel("OPC-N3 bin0\n(counts per 5 s)", fontsize=_FS - 1)
+
+    # (c) Peak-window span + portal QA/QC removal interval.
+    ax_strip.axvspan(t0, t1, ymin=0.55, ymax=0.95, color=color, alpha=0.35,
+                     label="5 s peak window")
+    q0 = rec.get("portal_qaqc_removal_start")
+    q1 = rec.get("portal_qaqc_removal_end")
+    if pd.notna(q0) and pd.notna(q1):
+        ax_strip.axvspan(q0, q1, ymin=0.10, ymax=0.50, color=ROLE_COLORS["SMPS"],
+                         alpha=0.6, label="portal QA/QC removal")
+    ax_strip.set_yticks([])
+    ax_strip.set_ylabel("intervals", fontsize=_FS - 2)
+    ax_strip.legend(loc="upper right", fontsize=_FS - 3, frameon=True, ncol=2)
+    ax_strip.set_xlabel("Local time (EDT)", fontsize=_FS)
+
+    # Vertical guides at the peak-window bounds across the data panels.
+    for ax in (ax_neph, ax_opc):
+        ax.axvline(t0, color=SHADE, ls=":", lw=1.0)
+        ax.axvline(t1, color=SHADE, ls=":", lw=1.0)
+        ax.tick_params(labelsize=_FS - 2)
+
+    fig_dir = get_common_file("quantaq_figures")
+    save_fig(fig, fig_dir / "modulair_5sec_qaqc_timeseries_burn09.png")
+
+
 def _mpl_qaqc_overlap(results: list[dict]) -> None:
     """
-    Grouped bar chart per burn-unit pair: peak_window_duration vs
-    portal_qaqc_removal_duration (both minutes). Every pair with a peak window
-    (saturation or fallback) and a portal product is shown; fallback-windowed
-    pairs are hatched to distinguish them from saturated pairs.
+    Figure S6 (SI, demoted from main text): grouped bar chart per burn-unit
+    pair, peak_window_duration vs portal_qaqc_removal_duration (both minutes).
+    Every pair with a peak window (saturation or fallback) and a portal product
+    is shown; fallback-windowed pairs are hatched to distinguish them from
+    saturated pairs. Unit and location are explicit in the x labels.
     """
     rows = [
         r for r in results
@@ -1035,8 +1143,10 @@ def _mpl_qaqc_overlap(results: list[dict]) -> None:
         return
 
     rows = sorted(rows, key=lambda r: (int(r["burn"].replace("burn", "")), r["unit"]))
-    labels = [f"{r['burn']}\n{('Bdrm' if r['unit'] == 'MODULAIR-PM1' else 'MR')}"
-              for r in rows]
+    labels = [
+        f"{r['burn']}\n{'PM1 / Bdrm' if r['unit'] == 'MODULAIR-PM1' else 'PM2 / MR'}"
+        for r in rows
+    ]
     peak_dur = [r["peak_window_duration_minutes"] for r in rows]
     qaqc_dur = [r.get("portal_qaqc_removal_duration_minutes", np.nan) for r in rows]
     # Hatch the near-ceiling fallback windows so they read distinctly from the
@@ -1045,38 +1155,30 @@ def _mpl_qaqc_overlap(results: list[dict]) -> None:
 
     x = np.arange(len(rows))
     w = 0.38
-    fig, ax = plt.subplots(figsize=(max(7.0, 1.1 * len(rows)), 5.0))
-    bars = ax.bar(x - w / 2, peak_dur, w, label="5 s peak window",
-                  color="#1f77b4", alpha=0.85)
+    fig, ax = plt.subplots(figsize=(figsize("double")[0], 3.4))
+    sat_color = UNIT_COLOR["MODULAIR-PM2"]
+    bars = ax.bar(x - w / 2, peak_dur, w, color=sat_color, alpha=0.85)
     for bar, hatch in zip(bars, hatches):
         if hatch:
             bar.set_hatch(hatch)
-    ax.bar(x + w / 2, qaqc_dur, w, label="Portal QA/QC removal",
-           color="#ff7f0e", alpha=0.85)
+    ax.bar(x + w / 2, qaqc_dur, w, color=ROLE_COLORS["SMPS"], alpha=0.85)
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=TEXT_CONFIG["ticksize"])
-    ax.set_ylabel("Duration (minutes)", fontsize=TEXT_CONFIG["labelsize"],
-                  fontweight="bold")
-    ax.set_title("Peak window vs portal QA/QC removal",
-                 fontsize=TEXT_CONFIG["labelsize"], fontweight="bold")
-    ax.tick_params(labelsize=TEXT_CONFIG["ticksize"])
+    ax.set_xticklabels(labels, fontsize=_FS - 2)
+    ax.set_ylabel("Duration (minutes)", fontsize=_FS)
+    ax.set_title("Peak window vs portal QA/QC removal", fontsize=_FS)
+    ax.tick_params(labelsize=_FS - 1)
 
     from matplotlib.patches import Patch
-
     handles = [
-        Patch(color="#1f77b4", alpha=0.85, label="5 s peak window (saturated)"),
-        Patch(facecolor="#1f77b4", alpha=0.85, hatch="///",
+        Patch(color=sat_color, alpha=0.85, label="5 s peak window (saturated)"),
+        Patch(facecolor=sat_color, alpha=0.85, hatch="///",
               label="5 s peak window (fallback)"),
-        Patch(color="#ff7f0e", alpha=0.85, label="Portal QA/QC removal"),
+        Patch(color=ROLE_COLORS["SMPS"], alpha=0.85, label="Portal QA/QC removal"),
     ]
-    ax.legend(handles=handles, fontsize=TEXT_CONFIG["legendsize"])
+    ax.legend(handles=handles, fontsize=_FS - 2)
 
     fig_dir = get_common_file("quantaq_figures")
-    fig_dir.mkdir(parents=True, exist_ok=True)
-    out_path = fig_dir / "modulair_5sec_qaqc_overlap.png"
-    fig.savefig(str(out_path), dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"    [mpl] {out_path.name}")
+    save_fig(fig, fig_dir / "modulair_5sec_qaqc_overlap.png")
 
 
 # ==============================================================================
@@ -1578,7 +1680,32 @@ def _write_manuscript_md(results: list[dict], summary: dict) -> None:
         f"**OPC-N3 suppression:** \"{s_opc}\"\n\n"
         f"**QA/QC alignment:** \"{s_qaqc}\"\n\n"
         "---\n\n## Replacement paragraph (third paragraph of 3.2.3)\n\n"
-        f"{para}\n"
+        f"{para}\n\n"
+        "---\n\n## Figure captions (reworked figures)\n\n"
+        "**Figure 2 (main text), modulair_5sec_qaqc_timeseries_burn09.png:** "
+        "\"Burn 09 Morning Room (MODULAIR-PM2) 5 s time series over the peak "
+        "window. Top: the PMS5003 nephelometer bin 0 sits at the 16-bit ceiling "
+        "(65535, dashed line). Middle: the OPC-N3 bin 0 (0.35-0.46 um) count is "
+        "suppressed over the same window. Bottom: the 5 s peak-window span and "
+        "the portal QA/QC removal interval, showing that the removal falls "
+        "within the saturated, bin-0-suppressed window. The three features "
+        "coincide in time.\"\n\n"
+        "**Figure S3 (SI), modulair_5sec_bin_response_grid.png:** \"Peak-window "
+        "reshaping of the OPC-N3 size distribution, shown as absolute OPC-N3 "
+        "count concentration per bin (counts per 5 s) versus bin lower edge "
+        "(log-log) for the pre-peak baseline (dashed) and the peak window "
+        "(solid), one panel per MODULAIR-PM burn-unit pair with a peak window. "
+        "The smallest bin (0.35-0.46 um, shaded) is suppressed during the peak "
+        "while the larger bins rise from a near-zero pre-fire baseline. Counts "
+        "are plotted directly rather than as a peak/pre ratio because the "
+        "larger-bin pre-fire baselines are near zero.\"\n\n"
+        "**Figure S6 (SI), modulair_5sec_qaqc_overlap.png (demoted from main "
+        "text):** \"Duration of the 5 s peak window (solid bars where the "
+        "nephelometer bin 0 saturated, hatched where defined by the fallback "
+        "criterion) and of the portal QA/QC removal interval for each "
+        "MODULAIR-PM burn-unit record (unit and location given in the x labels). "
+        "Where a portal removal occurs it is shorter than, and falls within, the "
+        "peak window.\"\n"
     )
     path = out_dir / "modulair_5sec_peak_manuscript_sentences.md"
     path.write_text(text, encoding="utf-8")
@@ -1593,6 +1720,7 @@ def _write_manuscript_md(results: list[dict], summary: dict) -> None:
 def main() -> None:
     """Run the full peak-window analysis: load, analyze, write CSV/MD/figures."""
     warnings.filterwarnings("ignore")
+    apply_est_style()
     print("\n" + "=" * 70)
     print("MODULAIR-PM 5 s peak-window analysis  -  Burns 4-10")
     print("=" * 70)
@@ -1651,6 +1779,7 @@ def main() -> None:
 
     print("\nWriting matplotlib figures...")
     _mpl_bin_response_grid(results)
+    _mpl_qaqc_timeseries_burn09(results)
     _mpl_qaqc_overlap(results)
 
     print("\nWriting markdown outputs...")

@@ -46,6 +46,14 @@ from bokeh.plotting import figure, output_file, save
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
 from src.data_paths import get_common_file, get_instrument_path
+from src.fig_style import (  # noqa: E402
+    INSTR_COLORS,
+    REF_LINE,
+    SHADE,
+    apply_est_style,
+    figsize,
+    save_fig,
+)
 
 # ==============================================================================
 # CONSTANTS
@@ -119,15 +127,15 @@ INSTR_KEY = {
     "AeroTrak2": "aerotrak_kitchen",
 }
 
-# Matplotlib TEXT_CONFIG (matches project convention)
+# Numeric point size for matplotlib calls (matches src.fig_style BASE_FONT_PT).
 _FS = 12
-TEXT_CONFIG = dict(fontsize=_FS, labelsize=_FS, ticksize=_FS, legendsize=_FS)
 
-# Plot colours
+# Plot colours from the shared colorblind-safe palette (Bedroom 2 blue,
+# Morning Room vermillion, SMPS orange).
 COLOR = {
-    "AeroTrak1": "#003f5c",
-    "AeroTrak2": "#ef5675",
-    "smps": "#ffa600",
+    "AeroTrak1": INSTR_COLORS["AeroTrak1"],
+    "AeroTrak2": INSTR_COLORS["AeroTrak2"],
+    "smps": "#E69F00",
 }
 
 # CSV column order for per-burn output
@@ -1148,8 +1156,9 @@ def _mpl_small_multiples(
     fig, axes = plt.subplots(
         nrows,
         ncols,
-        figsize=(5.5 * ncols, 4.0 * nrows),
-        constrained_layout=True,
+        figsize=(figsize("double")[0], 2.4 * nrows),
+        sharex=True,
+        sharey=True,
     )
     axes = np.array(axes).flatten()
 
@@ -1193,15 +1202,17 @@ def _mpl_small_multiples(
                 tp_min = (tp - ignit).total_seconds() / 60.0
                 ax.axvline(tp_min, color=COLOR[instr], lw=0.8, ls=":")
 
-        ax.axvline(0, color="black", lw=0.9, ls="--")
+        ax.axvline(0, color=REF_LINE, lw=0.9, ls="--")
         ax.set_xlim(-15, MAX_WIN_HR * 60)
-        ax.set_xlabel("min from ignition", fontsize=TEXT_CONFIG["labelsize"])
-        ax.set_ylabel("#/cm³", fontsize=TEXT_CONFIG["labelsize"])
-        ax.tick_params(labelsize=TEXT_CONFIG["ticksize"])
-        ax.set_title(burn_id, fontsize=TEXT_CONFIG["labelsize"], fontweight="bold")
+        ax.tick_params(labelsize=_FS - 2)
+        ax.set_title(burn_id, fontsize=_FS - 1)
 
     for ax in axes[len(all_burns) :]:
         ax.set_visible(False)
+
+    # Shared axis labels (one per figure) instead of per-panel labels.
+    fig.supxlabel("min from ignition", fontsize=_FS)
+    fig.supylabel("0.3-0.5 µm count (#/cm³)", fontsize=_FS)
 
     # Single figure-level legend with a fixed handle set, independent of which
     # series happen to appear in any given panel (e.g. burn2 has no Bedroom 2).
@@ -1210,22 +1221,19 @@ def _mpl_small_multiples(
     legend_handles = [
         Line2D([0], [0], color=COLOR["AeroTrak1"], lw=1.5, label="Bedroom 2"),
         Line2D([0], [0], color=COLOR["AeroTrak2"], lw=1.5, label="Morning Room"),
-        Line2D([0], [0], color="black", lw=0.9, ls="--", label="Ignition"),
+        Line2D([0], [0], color=REF_LINE, lw=0.9, ls="--", label="Ignition"),
     ]
     fig.legend(
         handles=legend_handles,
-        loc="upper right",
-        bbox_to_anchor=(0.995, 0.8),
-        fontsize=TEXT_CONFIG["legendsize"],
+        loc="upper center",
+        ncol=3,
+        bbox_to_anchor=(0.5, 1.02),
+        fontsize=_FS - 2,
         frameon=True,
     )
 
     fig_dir = get_common_file("coincidence_figures")
-    fig_dir.mkdir(parents=True, exist_ok=True)
-    out_path = fig_dir / "aerotrak_coincidence_small_multiples.png"
-    fig.savefig(str(out_path), dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"    [mpl] {out_path.name}")
+    save_fig(fig, fig_dir / "aerotrak_coincidence_small_multiples.png")
 
 
 def bl_row_date_from_results(
@@ -1261,9 +1269,8 @@ def _mpl_overlay(all_results: list[dict]) -> None:
         print("    [mpl] No AeroTrak2 results for overlay figure.")
         return
 
-    fig, ax = plt.subplots(figsize=(7.5, 5.0))
+    fig, ax = plt.subplots(figsize=figsize("double", aspect=0.6))
 
-    cmap = plt.get_cmap("viridis", len(at2))
     all_burns_sorted = sorted(at2, key=lambda r: int(r["burn"].replace("burn", "")))
 
     # Common time grid (minutes from ignition) for the median/IQR summary.
@@ -1283,8 +1290,9 @@ def _mpl_overlay(all_results: list[dict]) -> None:
         t_norm = (df_day["Date and Time"] - ignit).dt.total_seconds() / 60.0
         vals = df_day[ch1].replace(0, np.nan)
 
-        # Faint individual burn trace
-        ax.semilogy(t_norm, vals, color=cmap(i), lw=0.8, label=burn_id, alpha=0.35)
+        # Faint individual burn traces in neutral gray so the bold vermillion
+        # Morning Room summary (median + IQR) reads clearly through them.
+        ax.semilogy(t_norm, vals, color=SHADE, lw=0.8, label=burn_id, alpha=0.40)
 
         # Resample onto the common grid for the summary band. Mask points
         # outside the burn's own time span so flat extrapolation does not bias
@@ -1313,7 +1321,7 @@ def _mpl_overlay(all_results: list[dict]) -> None:
             grid[valid],
             q25[valid],
             q75[valid],
-            color="#003f5c",
+            color=COLOR["AeroTrak2"],
             alpha=0.20,
             label="IQR (across burns)",
             zorder=4,
@@ -1321,38 +1329,25 @@ def _mpl_overlay(all_results: list[dict]) -> None:
         ax.semilogy(
             grid[valid],
             med[valid],
-            color="#003f5c",
+            color=COLOR["AeroTrak2"],
             lw=2.6,
             label="Median",
             zorder=5,
         )
 
-    ax.axvline(0, color="black", lw=1.0, ls="--", label="Ignition")
+    ax.axvline(0, color=REF_LINE, lw=1.0, ls="--", label="Ignition")
     ax.set_xlim(-15, MAX_WIN_HR * 60)
-    ax.set_xlabel(
-        "Minutes from ignition",
-        fontsize=TEXT_CONFIG["labelsize"],
-        fontweight="bold",
-    )
-    ax.set_ylabel(
-        "0.3–0.5 µm count (#/cm³)",
-        fontsize=TEXT_CONFIG["labelsize"],
-        fontweight="bold",
-    )
-    ax.tick_params(labelsize=TEXT_CONFIG["ticksize"])
+    ax.set_xlabel("Minutes from ignition", fontsize=_FS)
+    ax.set_ylabel("0.3-0.5 µm count (#/cm³)", fontsize=_FS)
+    ax.tick_params(labelsize=_FS)
     ax.set_title(
-        "AeroTrak 2 (Morning Room) — Ch1 count, all burns aligned to ignition",
-        fontsize=TEXT_CONFIG["labelsize"],
-        fontweight="bold",
+        "AeroTrak 2 (Morning Room): Ch1 count, all burns aligned to ignition",
+        fontsize=_FS,
     )
-    ax.legend(fontsize=TEXT_CONFIG["legendsize"], ncol=2, loc="lower right")
+    ax.legend(fontsize=_FS - 2, ncol=2, loc="upper right")
 
     fig_dir = get_common_file("coincidence_figures")
-    fig_dir.mkdir(parents=True, exist_ok=True)
-    out_path = fig_dir / "aerotrak_coincidence_overlay.png"
-    fig.savefig(str(out_path), dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"    [mpl] {out_path.name}")
+    save_fig(fig, fig_dir / "aerotrak_coincidence_overlay.png")
 
 
 # ==============================================================================
@@ -1362,9 +1357,15 @@ def _mpl_overlay(all_results: list[dict]) -> None:
 
 def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
     """
-    Scatter plot: x = peak total PM3 mass (ug/m3), y = L_central.
-    Marker shape by location. Error bars from L_low to L_high (vertical).
-    Horizontal reference line at L = 0.10 (manufacturer 10 % threshold).
+    Figure S2 (SI). Scatter: x = peak total PM3 mass (ug/m3), y = L_central
+    (Poisson coincidence-loss fraction), with vertical L_low-to-L_high error
+    bars. Marker shape by location (Bedroom 2 circles, Morning Room squares).
+    Horizontal reference at L = 0.10 (manufacturer 10 % threshold).
+
+    Per-point burn labels are intentionally omitted: every point sits far below
+    the threshold and the points cluster, so inline labels overlapped badly. A
+    single annotation states the margin below threshold instead; per-point
+    identity is available in the per-burn CSV.
     """
     records = [
         r
@@ -1376,7 +1377,7 @@ def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
         print("    [mpl] No data for loss vs peak-mass scatter.")
         return
 
-    fig, ax = plt.subplots(figsize=(7.0, 5.0))
+    fig, ax = plt.subplots(figsize=figsize("onehalf", aspect=0.72))
 
     markers = {"bedroom2": "o", "morning_room": "s"}
     plotted = set()
@@ -1401,39 +1402,29 @@ def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
             alpha=0.85,
             label=lbl,
         )
+
+    ax.axhline(0.10, color=REF_LINE, lw=0.9, ls=":", label="10 % threshold")
+
+    # Single annotation on the margin below threshold (replaces overlapping
+    # per-point labels). Express it as orders of magnitude from the max L.
+    max_l = max(r["L_central"] for r in records)
+    if max_l > 0:
+        orders = np.log10(0.10 / max_l)
         ax.annotate(
-            r["burn"][-2:],
-            xy=(x, y),
-            xytext=(3, 3),
-            textcoords="offset points",
-            fontsize=8,
+            f"all points > {orders:.0f} orders of magnitude\nbelow the 10 % threshold",
+            xy=(0.97, 0.06), xycoords="axes fraction", ha="right", va="bottom",
+            fontsize=_FS - 2,
         )
 
-    ax.axhline(0.10, color="gray", lw=0.9, ls=":", label="10 % threshold")
-    ax.set_xlabel(
-        "Peak PM3 mass (µg/m³)",
-        fontsize=TEXT_CONFIG["labelsize"],
-        fontweight="bold",
-    )
-    ax.set_ylabel(
-        "Coincidence loss L (fraction)",
-        fontsize=TEXT_CONFIG["labelsize"],
-        fontweight="bold",
-    )
-    ax.tick_params(labelsize=TEXT_CONFIG["ticksize"])
-    ax.set_title(
-        "Estimated coincidence loss vs peak PM3 mass",
-        fontsize=TEXT_CONFIG["labelsize"],
-        fontweight="bold",
-    )
-    ax.legend(fontsize=TEXT_CONFIG["legendsize"])
+    ax.set_yscale("log")
+    ax.set_xlabel("Peak PM3 mass (µg/m³)", fontsize=_FS)
+    ax.set_ylabel("Coincidence loss L (fraction)", fontsize=_FS)
+    ax.tick_params(labelsize=_FS)
+    ax.set_title("Estimated coincidence loss vs peak PM3 mass", fontsize=_FS)
+    ax.legend(fontsize=_FS - 2, loc="upper left")
 
     fig_dir = get_common_file("coincidence_figures")
-    fig_dir.mkdir(parents=True, exist_ok=True)
-    out_path = fig_dir / "aerotrak_loss_vs_peakmass.png"
-    fig.savefig(str(out_path), dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"    [mpl] {out_path.name}")
+    save_fig(fig, fig_dir / "aerotrak_loss_vs_peakmass.png")
 
 
 # ==============================================================================
@@ -1806,6 +1797,7 @@ def main() -> None:
     """
     warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
     warnings.filterwarnings("ignore", category=FutureWarning)
+    apply_est_style()
 
     print("Loading burn log...")
     burn_log = _load_burn_log()

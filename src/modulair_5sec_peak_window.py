@@ -154,6 +154,14 @@ QAQC_GAP_MIN = 3         # grow the block across gaps up to this many minutes
 # Co-located AeroTrak coincidence CSV (peak PM3 mass + Ch1 reversal interval).
 AEROTRAK_CSV = "aerotrak_coincidence_per_burn.csv"
 
+# Main-text Figure 2 worked example. Burn 06 MODULAIR-PM2 is the clean overlap
+# case: the portal QA/QC removal falls fully inside the saturated, bin-0
+# suppressed window. Burn 09 was the original choice but its removal sits on the
+# rising edge (~2 min before the exact-ceiling plateau), so it is not the
+# example that supports the "coincides" sentence.
+FIG2_BURN = "burn6"
+FIG2_UNIT = "MODULAIR-PM2"
+
 # Numeric point size for matplotlib calls (matches src.fig_style BASE_FONT_PT).
 _FS = 12
 
@@ -423,10 +431,12 @@ def _portal_qaqc_window(
     while hi < len(times) - 1 and (times[hi + 1] - times[hi]) <= gap:
         hi += 1
 
-    # Removal window = first to last removed minute in the block (1-min cadence,
-    # so add one minute so a single removed sample reads as ~1 min, not 0).
-    q_start = pd.Timestamp(times[lo])
-    q_end = pd.Timestamp(times[hi]) + pd.Timedelta(minutes=1)
+    # Removal window = the true coverage of the contiguous removed block. Each
+    # portal label is interval-centered (see load_portal_burn), so a removed
+    # minute stamped at t filtered the 30 s on either side of t; the block runs
+    # from the first center minus 30 s to the last center plus 30 s.
+    q_start = pd.Timestamp(times[lo]) - pd.Timedelta(seconds=30)
+    q_end = pd.Timestamp(times[hi]) + pd.Timedelta(seconds=30)
     q_dur_min = (q_end - q_start).total_seconds() / 60.0
 
     out = dict(
@@ -1047,9 +1057,9 @@ def _mpl_bin_response_grid(results: list[dict]) -> None:
 # ==============================================================================
 
 
-def _mpl_qaqc_timeseries_burn09(results: list[dict]) -> None:
+def _mpl_qaqc_timeseries_fig2(results: list[dict]) -> None:
     """
-    Figure 2 (main text, double column): Burn 09 MODULAIR-PM2 (Morning Room)
+    Figure 2 (main text, double column): FIG2_BURN MODULAIR-PM2 (Morning Room)
     5 s time series over the peak window, three aligned-time panels showing
     that the saturated nephelometer, the suppressed OPC-N3 bin 0, and the
     portal QA/QC removal interval coincide:
@@ -1057,26 +1067,37 @@ def _mpl_qaqc_timeseries_burn09(results: list[dict]) -> None:
         (b) OPC-N3 bin0 raw counts (the suppression);
         (c) a strip marking the 5 s peak-window span and the portal QA/QC
             removal interval.
+
+    The worked example is Burn 06 (see FIG2_BURN): its portal removal falls
+    fully inside the saturated, bin-0 suppressed window on the shared clock.
     """
+    burn_no = FIG2_BURN.replace("burn", "").zfill(2)
+    loc_label = UNIT_CONFIG[FIG2_UNIT]["location_label"]
     rec = next((r for r in results
-                if r["burn"] == "burn9" and r["unit"] == "MODULAIR-PM2"
+                if r["burn"] == FIG2_BURN and r["unit"] == FIG2_UNIT
                 and r.get("data_present")), None)
     if rec is None or pd.isna(rec.get("t_peak_start")):
-        print("    [mpl] burn9 MODULAIR-PM2 not available for QA/QC time series.")
+        print(f"    [mpl] {FIG2_BURN} {FIG2_UNIT} not available for QA/QC time series.")
         return
 
     df = rec["_df"]
     t0 = rec["t_peak_start"]
     t1 = rec["t_peak_end"]
+    # Pad the display window so both the rising edge and the removal interval are
+    # visible even when the removal extends slightly past the saturated plateau.
+    q0 = rec.get("portal_qaqc_removal_start")
+    q1 = rec.get("portal_qaqc_removal_end")
     pad = pd.Timedelta(minutes=8)
-    t_lo, t_hi = t0 - pad, t1 + pad
+    span_lo = min([t for t in (t0, q0) if pd.notna(t)])
+    span_hi = max([t for t in (t1, q1) if pd.notna(t)])
+    t_lo, t_hi = span_lo - pad, span_hi + pad
     sub = df[(df["timestamp"] >= t_lo) & (df["timestamp"] <= t_hi)].copy()
     if sub.empty:
-        print("    [mpl] burn9 MODULAIR-PM2 window empty for QA/QC time series.")
+        print(f"    [mpl] {FIG2_BURN} {FIG2_UNIT} window empty for QA/QC time series.")
         return
 
     ts = sub["timestamp"]
-    color = UNIT_COLOR["MODULAIR-PM2"]
+    color = UNIT_COLOR[FIG2_UNIT]
 
     fig, axes = plt.subplots(
         3, 1, figsize=(figsize("double")[0], 5.4), sharex=True,
@@ -1092,7 +1113,7 @@ def _mpl_qaqc_timeseries_burn09(results: list[dict]) -> None:
                      xytext=(2, -10), textcoords="offset points",
                      fontsize=_FS - 3, color=REF_LINE, va="top")
     ax_neph.set_ylabel("PMS5003\nneph bin0", fontsize=_FS - 1)
-    ax_neph.set_title("Burn 09 Morning Room (MODULAIR-PM2): saturated "
+    ax_neph.set_title(f"Burn {burn_no} {loc_label} ({FIG2_UNIT}): saturated "
                       "nephelometer, suppressed OPC-N3 bin 0, and portal "
                       "QA/QC removal coincide", fontsize=_FS - 1)
 
@@ -1104,8 +1125,6 @@ def _mpl_qaqc_timeseries_burn09(results: list[dict]) -> None:
     # (c) Peak-window span + portal QA/QC removal interval.
     ax_strip.axvspan(t0, t1, ymin=0.55, ymax=0.95, color=color, alpha=0.35,
                      label="5 s peak window")
-    q0 = rec.get("portal_qaqc_removal_start")
-    q1 = rec.get("portal_qaqc_removal_end")
     if pd.notna(q0) and pd.notna(q1):
         ax_strip.axvspan(q0, q1, ymin=0.10, ymax=0.50, color=ROLE_COLORS["SMPS"],
                          alpha=0.6, label="portal QA/QC removal")
@@ -1121,7 +1140,7 @@ def _mpl_qaqc_timeseries_burn09(results: list[dict]) -> None:
         ax.tick_params(labelsize=_FS - 2)
 
     fig_dir = get_common_file("quantaq_figures")
-    save_fig(fig, fig_dir / "modulair_5sec_qaqc_timeseries_burn09.png")
+    save_fig(fig, fig_dir / f"modulair_5sec_qaqc_timeseries_{FIG2_BURN}.png")
 
 
 def _mpl_qaqc_overlap(results: list[dict]) -> None:
@@ -1682,8 +1701,8 @@ def _write_manuscript_md(results: list[dict], summary: dict) -> None:
         "---\n\n## Replacement paragraph (third paragraph of 3.2.3)\n\n"
         f"{para}\n\n"
         "---\n\n## Figure captions (reworked figures)\n\n"
-        "**Figure 2 (main text), modulair_5sec_qaqc_timeseries_burn09.png:** "
-        "\"Burn 09 Morning Room (MODULAIR-PM2) 5 s time series over the peak "
+        "**Figure 2 (main text), modulair_5sec_qaqc_timeseries_burn6.png:** "
+        "\"Burn 06 Morning Room (MODULAIR-PM2) 5 s time series over the peak "
         "window. Top: the PMS5003 nephelometer bin 0 sits at the 16-bit ceiling "
         "(65535, dashed line). Middle: the OPC-N3 bin 0 (0.35-0.46 um) count is "
         "suppressed over the same window. Bottom: the 5 s peak-window span and "
@@ -1779,7 +1798,7 @@ def main() -> None:
 
     print("\nWriting matplotlib figures...")
     _mpl_bin_response_grid(results)
-    _mpl_qaqc_timeseries_burn09(results)
+    _mpl_qaqc_timeseries_fig2(results)
     _mpl_qaqc_overlap(results)
 
     print("\nWriting markdown outputs...")

@@ -226,6 +226,14 @@ def load_portal_burn(unit: str, burn_id: str) -> pd.DataFrame | None:
             + pd.Timedelta(minutes=cfg["time_shift_min"])
         )
 
+    # The portal 1-minute label is a trailing 60 s average: the row stamped at
+    # HH:MM:SS reports the mean of the preceding minute (verified against the
+    # 5 s record, where the portal value equals the 5 s trailing-1-min mean to
+    # machine precision). Stamp each portal row at its interval CENTER so its
+    # plotted/compared time matches the 5 s clock; without this a removed minute
+    # appears one minute later than the data it actually filtered.
+    df["timestamp"] = df["timestamp"] - pd.Timedelta(seconds=30)
+
     df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
 
     burn_date = pd.Timestamp(BURN_DATES[burn_id]).date()

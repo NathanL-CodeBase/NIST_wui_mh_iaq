@@ -63,20 +63,20 @@ from src.fig_style import (  # noqa: E402
 # ==============================================================================
 
 # Optical sensing volume from Poisson model  L = 1 - exp(-n*V)
-# TSI Concentration Limits spec: 5 % coincidence loss at 3,000,000 particles/ft^3.
-# The spec is stated per cubic foot; 1 ft^3 = 28,316.85 cm^3, so the limit is
-# ~106 particles/cm3 (an earlier conversion divided by 28.3, the number of
-# liters per ft^3, and overstated the limit by a factor of 1000). The 2024
-# 9306-V2 spec sheet (rev N) gives an alternative statement, 10 % loss at
-# 5,950,000 particles/ft^3 (2.1e8 particles/m^3 = 210 particles/cm3), which
-# implies nearly the same sensing volume (5.0e-4 cm3), so the inferred V is
-# robust to the spec variant.
+# TSI AeroTrak 9306-V2 Concentration Limits spec (2024 spec sheet, rev N):
+# 10 % coincidence loss at 5,950,000 particles/ft^3, stated equivalently as
+# 2.1 x 10^8 particles/m^3. The spec is stated per unit volume; 1 ft^3 =
+# 28,316.85 cm^3, so the limit is ~210 particles/cm3. (An earlier version of
+# this code divided by 28.3, the number of liters per ft^3, and overstated the
+# limit by a factor of 1000.) The older operation-manual statement, 5 % loss at
+# 3,000,000 particles/ft^3 (~106 particles/cm3), implies nearly the same sensing
+# volume (within ~3 %), so the inferred V is robust to the spec variant.
 FT3_TO_CM3 = 28_316.846592  # cm3 per cubic foot
 
-COINCIDENCE_LOSS_SPEC = 0.05  # manufacturer Concentration Limits coincidence loss
-COINCIDENCE_THRESHOLD_CM3 = 3.0e6 / FT3_TO_CM3  # ~105.9 particles/cm3
+COINCIDENCE_LOSS_SPEC = 0.10  # manufacturer Concentration Limits coincidence loss
+COINCIDENCE_THRESHOLD_CM3 = 5.95e6 / FT3_TO_CM3  # ~210.1 particles/cm3
 
-V_CENTRAL = float(-np.log(1.0 - COINCIDENCE_LOSS_SPEC) / COINCIDENCE_THRESHOLD_CM3)  # ~4.8e-4 cm3
+V_CENTRAL = float(-np.log(1.0 - COINCIDENCE_LOSS_SPEC) / COINCIDENCE_THRESHOLD_CM3)  # ~5.0e-4 cm3
 # Same +/- one-third band previously applied to the sensing-volume estimate,
 # now spanning the two published spec variants comfortably.
 V_LOW = V_CENTRAL * (2.0 / 3.0)
@@ -1143,12 +1143,12 @@ def _bokeh_individual(result: dict) -> None:
                     y_range_name="smps",
                 )
 
-        # Ch1 panel only: TSI 5 % coincidence-loss limit and the Poisson
+        # Ch1 panel only: TSI 10 % coincidence-loss limit and the Poisson
         # rollover ceiling (the maximum count the instrument can report; the
         # observed peaks pin near this line, the overload signature).
         if ch == "Ch1":
             for y_ref, dash_ref, text_ref in [
-                (COINCIDENCE_THRESHOLD_CM3, "dotted", "TSI 5% coincidence-loss limit"),
+                (COINCIDENCE_THRESHOLD_CM3, "dotted", "TSI 10% coincidence-loss limit"),
                 (N_MEAS_CEILING_CM3, "dashed", "Poisson rollover ceiling"),
             ]:
                 p.add_layout(
@@ -1442,8 +1442,8 @@ def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
     Figure S2 (SI). Scatter: x = peak total PM3 mass (ug/m3), y = L_central
     (Poisson coincidence-loss fraction at the measured peak count), with
     vertical L_low-to-L_high error bars. Marker shape by location (Bedroom 2
-    circles, Morning Room squares). Horizontal reference at L = 0.05
-    (manufacturer 5 % coincidence-loss limit).
+    circles, Morning Room squares). Horizontal reference at the manufacturer
+    coincidence-loss limit (COINCIDENCE_LOSS_SPEC, currently 10 %).
 
     Per-point burn labels are intentionally omitted: the points cluster, so
     inline labels overlapped badly. A single annotation notes that every point
@@ -1486,7 +1486,10 @@ def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
             label=lbl,
         )
 
-    ax.axhline(0.05, color=REF_LINE, lw=0.9, ls=":", label="5 % coincidence-loss limit")
+    ax.axhline(
+        COINCIDENCE_LOSS_SPEC, color=REF_LINE, lw=0.9, ls=":",
+        label=f"{COINCIDENCE_LOSS_SPEC:.0%} coincidence-loss limit",
+    )
 
     # Single annotation (replaces overlapping per-point labels). The measured
     # count understates the true concentration under overload, so the plotted
@@ -1494,7 +1497,7 @@ def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
     min_l = min(r["L_central"] for r in records)
     if min_l > 0:
         ax.annotate(
-            f"all points exceed the 5 % loss limit\n"
+            f"all points exceed the {COINCIDENCE_LOSS_SPEC:.0%} loss limit\n"
             f"(minimum L = {min_l:.0%}); L at the measured\n"
             f"count is a lower bound on the actual loss",
             xy=(0.03, 0.35), xycoords="axes fraction", ha="left", va="center",
@@ -1688,9 +1691,9 @@ def _write_markdown(all_results: list[dict]) -> None:
         para2 = (
             f"Median peak 0.3-0.5 um count concentration across all non-sealed pairs "
             f"was {_fmt(med_npeak)} particles/cm3, a factor of "
-            f"{_fmt(factor_med, '.1f')} ABOVE the TSI manufacturer's 5% "
+            f"{_fmt(factor_med, '.1f')} ABOVE the TSI manufacturer's 10% "
             f"coincidence-loss limit of {COINCIDENCE_THRESHOLD_CM3:.0f} particles/cm3 "
-            f"(3,000,000 particles/ft3 at 28,317 cm3 per ft3). "
+            f"(5,950,000 particles/ft3, 2.1e8 particles/m3, 2024 spec sheet). "
             f"The Poisson dead-time model predicts coincidence losses of "
             f"{_fmt(min_L * 100, '.0f')}% to {_fmt(max_L * 100, '.0f')}% at the "
             f"measured counts; these are lower bounds because the measured count "
@@ -1828,8 +1831,8 @@ def _write_markdown(all_results: list[dict]) -> None:
         f"At the time of each reversal, the peak Ch1 count concentration ranged from "
         f"approximately {_fmt(min_npeak)} to {_fmt(max_npeak)} particles/cm3 "
         f"(median {_fmt(med_npeak_s)}), a factor of approximately "
-        f"{_fmt(factor_ms, '.1f')} above the manufacturer's 5% coincidence-loss limit "
-        f"of 3,000,000 particles/ft3 (approximately "
+        f"{_fmt(factor_ms, '.1f')} above the manufacturer's 10% coincidence-loss limit "
+        f"of 5,950,000 particles/ft3 (approximately "
         f"{COINCIDENCE_THRESHOLD_CM3:.0f} particles/cm3); the Poisson dead-time model "
         f"predicts coincidence losses of at least {_fmt(min_L_pct, '.0f')}% to "
         f"{_fmt(max_L_pct, '.0f')}% at the measured counts (lower bounds, since the "
@@ -1905,7 +1908,7 @@ def _write_markdown(all_results: list[dict]) -> None:
         f"| Reversal-onset timing determinable | {n_timing_determinable} of {n_rev} |\n"
         f"| Onset preceded / at / followed mass peak | "
         f"{n_precede} / {n_at_peak} / {n_follow} |\n"
-        f"| TSI 5% coincidence-loss limit (#/cm3) | {COINCIDENCE_THRESHOLD_CM3:.0f} |\n"
+        f"| TSI 10% coincidence-loss limit (#/cm3) | {COINCIDENCE_THRESHOLD_CM3:.0f} |\n"
         f"| Factor above TSI limit (median) | {_fmt(factor_ms, '.1f')} |\n"
         f"| Poisson rollover ceiling (#/cm3) | {N_MEAS_CEILING_CM3:.0f} |\n"
         f"| Predicted L at measured counts (min to max, %) | "

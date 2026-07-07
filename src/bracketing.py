@@ -641,6 +641,7 @@ def _fig_burn09_bars(example: dict, fig_dir: Path) -> None:
     dt = example["dusttrak_ug"]
     at = example["aerotrak_pm3_ug"]
     pa = example["purpleair_pm25_ug"]
+    mod = example["modulair_pm25_ug"]
     suppressed = example["aerotrak_suppressed"]
 
     # (label, raw, band_low, band_high, color, annotation)
@@ -679,46 +680,63 @@ def _fig_burn09_bars(example: dict, fig_dir: Path) -> None:
                 "corrected /1.6 to /2.1",
             )
         )
+    # MODULAIR-PM2 portal PM2.5: a single QA/QC-bounded reading (Section 3.2.3),
+    # so it is shown as a point with no correction band. NaN band edges signal
+    # the no-band case to the draw loop below.
+    if not np.isnan(mod):
+        bars.append(
+            (
+                "MODULAIR-PM2\n(portal PM2.5)",
+                mod,
+                np.nan,
+                np.nan,
+                ROLE_COLORS["PMS5003"],
+                "QA/QC-bounded (Section 3.2.3)",
+            )
+        )
 
-    fig, ax = plt.subplots(figsize=figsize("onehalf", aspect=0.78))
+    fig, ax = plt.subplots(figsize=figsize("onehalf", aspect=0.85))
     y_positions = list(range(len(bars)))[::-1]
 
     # x-range with headroom: low end below the smallest value, high end with
     # room for the right-hand correction-factor annotations on a log axis.
     all_vals = [v for b in bars for v in (b[1], b[2], b[3]) if not np.isnan(v)]
-    x_lo = min(all_vals) / 3.0
-    x_hi = max(all_vals) * 6.0
+    x_lo = min(all_vals) / 4.0
+    x_hi = max(all_vals) * 4.0
     ax.set_xlim(x_lo, x_hi)
 
     for y, (label, raw, lo, hi, color, note) in zip(y_positions, bars):
-        # Corrected range as a shaded band.
-        ax.barh(
-            y, hi - lo, left=lo, height=0.45, color=color, alpha=0.30,
-            edgecolor=color, linewidth=1.2,
-        )
+        has_band = not (np.isnan(lo) or np.isnan(hi))
+        if has_band:
+            # Corrected range as a shaded band.
+            ax.barh(
+                y, hi - lo, left=lo, height=0.45, color=color, alpha=0.30,
+                edgecolor=color, linewidth=1.2,
+            )
         # Raw instrument reading as a point.
         ax.plot(raw, y, "o", color=color, markersize=9, zorder=5)
-        # Raw-value label to the LEFT of the point, clear of the band.
+        # Raw-value label below the point so it never overlaps the band or the
+        # correction note placed above.
         ax.annotate(
             f"raw {raw:.0f}",
-            xy=(raw, y), xytext=(-8, 0), textcoords="offset points",
-            ha="right", va="center", fontsize=_FS - 2, color=color,
+            xy=(raw, y), xytext=(0, -11), textcoords="offset points",
+            ha="center", va="top", fontsize=_FS - 3, color=color,
         )
-        # Correction-factor note to the right of the band's high end.
+        # Correction-factor note above the band/point, clear of the markers and
+        # of any dashed bracket lines.
+        note_x = hi if has_band else raw
         ax.annotate(
             note,
-            xy=(hi, y), xytext=(8, 0), textcoords="offset points",
-            va="center", fontsize=_FS - 3, color="black",
+            xy=(note_x, y), xytext=(0, 12), textcoords="offset points",
+            ha="center", va="bottom", fontsize=_FS - 3, color="black",
         )
 
     ax.set_yticks(y_positions)
     ax.set_yticklabels([b[0] for b in bars], fontsize=_FS)
-    ax.set_ylim(-0.7, len(bars) - 0.3)
+    ax.set_ylim(-0.8, len(bars) - 0.2)
     ax.set_xscale("log")
     ax.set_xlabel("PM mass concentration (µg/m³)", fontsize=_FS)
     ax.tick_params(axis="x", labelsize=_FS)
-    ax.set_title("Burn 09 Morning Room: raw readings and corrected bracket",
-                 fontsize=_FS)
     ax.grid(axis="x", ls=":", alpha=0.4)
 
     save_fig(fig, fig_dir / "bracketing_burn09_morning_room.png")
@@ -770,8 +788,6 @@ def _fig_cross_burn(df: pd.DataFrame, fig_dir: Path) -> None:
         ax.grid(axis="y", ls=":", alpha=0.4)
 
     axes[0].set_ylabel("Corrected PM mass bracket (µg/m³)", fontsize=_FS)
-    fig.suptitle("Corrected PM mass bracket per burn (lower_low to upper_high)",
-                 fontsize=_FS)
 
     save_fig(fig, fig_dir / "bracketing_cross_burn.png")
 

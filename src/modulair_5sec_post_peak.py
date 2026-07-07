@@ -898,15 +898,21 @@ def _mpl_small_multiples(results: list, fig_dir: Path) -> None:
     fig.supxlabel("Hours since end of peak window", fontsize=_FS)
     fig.supylabel("count / count at t_peak_end", fontsize=_FS)
 
+    # Legend swatches must match the plotted OPC-N3 trace colors, which are
+    # per unit (Bedroom 2 PM1 blue, Morning Room PM2 vermillion), not a single
+    # gray. The AeroTrak Ch1 companion is dashed black.
     from matplotlib.lines import Line2D
     handles = [
-        Line2D([0], [0], color="#555555", lw=1.5, label="OPC-N3 bin0 (normalized)"),
+        Line2D([0], [0], color=UNIT_COLOR["MODULAIR-PM1"], lw=1.5,
+               label="OPC-N3 bin0 - Bedroom 2 (norm.)"),
+        Line2D([0], [0], color=UNIT_COLOR["MODULAIR-PM2"], lw=1.5,
+               label="OPC-N3 bin0 - Morning Room (norm.)"),
         Line2D([0], [0], color=AEROTRAK_COLOR, lw=1.5, ls="--",
                label="AeroTrak Ch1 (normalized)"),
         Line2D([0], [0], color=REF_LINE, lw=0.7, ls=":", label="ratio = 1"),
     ]
-    fig.legend(handles=handles, loc="upper center", ncol=3,
-               fontsize=_FS - 2, frameon=True, bbox_to_anchor=(0.5, 1.02))
+    fig.legend(handles=handles, loc="upper center", ncol=2,
+               fontsize=_FS - 2, frameon=True, bbox_to_anchor=(0.5, 1.04))
 
     save_fig(fig, fig_dir / "modulair_5sec_post_peak_smallmultiples.png")
 
@@ -940,11 +946,9 @@ def _mpl_overlay(results: list, fig_dir: Path) -> None:
 
     ax.axhline(1.0, color=REF_LINE, lw=1.0, ls="--", label="value at t_peak_end")
     ax.set_xlabel("Hours since end of peak window", fontsize=_FS)
-    ax.set_ylabel("OPC-N3 bin0 count / value at t_peak_end", fontsize=_FS)
+    ax.set_ylabel("OPC-N3 bin0 count / t_peak_end value", fontsize=_FS)
     ax.tick_params(labelsize=_FS)
-    ax.set_title("MODULAIR-PM2 (Morning Room): OPC-N3 bin0 post-peak inversion",
-                 fontsize=_FS)
-    ax.legend(fontsize=_FS - 2, ncol=2, loc="upper right")
+    ax.legend(fontsize=_FS - 2, ncol=1, loc="lower right")
 
     save_fig(fig, fig_dir / "modulair_5sec_post_peak_overlay.png")
 
@@ -1004,7 +1008,7 @@ def _mpl_pm25_bias(results: list, fig_dir: Path) -> None:
     ax.set_yscale("log")
     ax.set_xticks(x)
     ax.set_xticklabels(labels, fontsize=_FS - 2)
-    ax.set_ylabel("Count ratio at +2 h (relative to t_peak_end)", fontsize=_FS)
+    ax.set_ylabel("Count ratio at +2 h (vs t_peak_end)", fontsize=_FS)
     ax.set_title("Bedroom 2: OPC-N3 small-bin vs SMPS at +2 h post-peak",
                  fontsize=_FS)
     ax.tick_params(labelsize=_FS - 1)

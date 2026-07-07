@@ -60,17 +60,31 @@ from src.fig_style import (  # noqa: E402
 # ==============================================================================
 
 # Optical sensing volumes from Poisson model  L = 1 - exp(-n*V)
-# TSI spec: 10 % coincidence at n = 1.4e5 /cm3 -> V_CENTRAL = -ln(0.9)/1.4e5
-V_CENTRAL = 7.5e-7  # cm3 (central estimate)
-V_LOW = 5.0e-7  # cm3 (lower bound)
-V_HIGH = 1.0e-6  # cm3 (upper bound)
+# TSI Concentration Limits spec: 5 % coincidence loss at 3,000,000 particles/ft^3
+# (= 1.05e5 particles/cm3 using the manuscript's ft^3->cm^3 mapping) ->
+# V_CENTRAL = -ln(0.95)/1.05e5 ~= 4.9e-7 cm3.
+V_CENTRAL = 4.9e-7  # cm3 (central estimate)
+V_LOW = 3.3e-7  # cm3 (lower bound)
+V_HIGH = 6.5e-7  # cm3 (upper bound)
 
-# Coincidence threshold: manufacturer 10 % coincidence concentration
-COINCIDENCE_THRESHOLD_CM3 = 1.4e5  # particles/cm3
+# Coincidence threshold: manufacturer 5 % coincidence-loss concentration
+# (3,000,000 particles/ft^3 -> 1.05e5 particles/cm3).
+COINCIDENCE_THRESHOLD_CM3 = 1.05e5  # particles/cm3
+COINCIDENCE_LOSS_SPEC = 0.05  # manufacturer Concentration Limits coincidence loss
 
 # Reversal detection parameters
 REVERSAL_FRAC = 0.5  # n_min < REVERSAL_FRAC * n_peak -> reversal present
 REVERSAL_WIN_MIN = 30  # search window after n_peak (minutes)
+
+# Minimum sustained duration (minutes) for a dip to count as a true reversal.
+# The overlay (aerotrak_coincidence_overlay.png) shows a genuine Ch1 reversal
+# does not establish until ~30 min; the short events that previously set the
+# low end of the duration range (~3 min) are the early ignition transient and
+# the post-peak decay, each followed by a sharp drop rather than a sustained
+# suppression. Requiring the count to stay below REVERSAL_FRAC * n_peak for at
+# least this contiguous span rejects those transients without hard-coding a
+# fixed onset time.
+REVERSAL_MIN_SUSTAIN_MIN = 8.0
 
 # Counts-conservation tolerance (fraction change allowed)
 CONSERVATION_TOL = 0.30
@@ -644,10 +658,40 @@ def _analyze_bin(
 
     # Combine: prefer pre-peak result when both fire (deeper dip scenario)
     if reversal_pre or reversal_post:
-        result["reversal_present"] = True
         n_min = n_min_pre if reversal_pre else n_min_post
         t_min = t_min_pre if reversal_pre else t_min_post
         assert isinstance(t_min, pd.Timestamp)  # always True inside this block
+
+        # Sustained-reversal gate: a true reversal stays suppressed below
+        # REVERSAL_FRAC * n_peak for a contiguous span around t_min. The early
+        # ignition transient and the post-peak decay each dip only briefly
+        # before a sharp drop, so they fail this test. Measure the contiguous
+        # below-threshold span that contains t_min and reject the candidate if
+        # it is shorter than REVERSAL_MIN_SUSTAIN_MIN.
+        thresh_gate = REVERSAL_FRAC * n_peak
+        below = s < thresh_gate
+        min_idx = int(np.nanargmin(np.abs((ts - np.datetime64(t_min)))))
+        if below[min_idx]:
+            lo_i = min_idx
+            while lo_i - 1 >= 0 and below[lo_i - 1]:
+                lo_i -= 1
+            hi_i = min_idx
+            while hi_i + 1 < len(below) and below[hi_i + 1]:
+                hi_i += 1
+            sustain_min = (
+                pd.Timestamp(ts[hi_i]) - pd.Timestamp(ts[lo_i])
+            ).total_seconds() / 60.0
+        else:
+            sustain_min = 0.0
+
+        if sustain_min < REVERSAL_MIN_SUSTAIN_MIN:
+            # Not a sustained reversal; leave result as the blank/no-reversal
+            # state but keep the peak so coincidence stats are still reported.
+            result["reversal_pre"] = False
+            result["t_min_pre"] = pd.NaT  # type: ignore[assignment]
+            return result
+
+        result["reversal_present"] = True
         result["n_min_during_reversal"] = n_min
         result["t_min"] = t_min  # type: ignore[assignment]
 
@@ -657,8 +701,13 @@ def _analyze_bin(
         t_onset = t_onset_pre if reversal_pre else t_peak
         result["reversal_onset"] = t_onset  # type: ignore[assignment]
 
-        # Duration: from t_min (bottom of dip) to first recovery to n_peak / 2.
-        # That recovery time is also the trailing edge of the reversal interval.
+        # Reversal interval and duration. The interval runs from the leading
+        # edge of the dip (onset, the downward crossing of n_peak/2) to the
+        # first recovery back above n_peak/2 (the trailing edge). Duration is
+        # the full onset-to-recovery span, which matches the sustained-reversal
+        # gate and the "reversal duration" reported in the text; measuring only
+        # t_min-to-recovery understated the duration when t_min sat late in a
+        # broad dip.
         thresh = n_peak / 2.0
         post_lo = ts > np.datetime64(t_min)  # type: ignore[operator]
         s_rec = s[post_lo]
@@ -666,8 +715,11 @@ def _analyze_bin(
         recovered = s_rec >= thresh
         if recovered.any():
             t_rec = pd.Timestamp(ts_rec[int(np.argmax(recovered))])
-            result["reversal_duration_minutes"] = (t_rec - t_min).total_seconds() / 60.0
             result["reversal_end"] = t_rec  # type: ignore[assignment]
+            t_dur_start = t_onset if pd.notna(t_onset) else t_min
+            result["reversal_duration_minutes"] = (
+                t_rec - t_dur_start  # type: ignore[operator]
+            ).total_seconds() / 60.0
 
     result["reversal_pre"] = reversal_pre
     result["t_min_pre"] = t_min_pre if reversal_pre else pd.NaT  # type: ignore[assignment]
@@ -1063,7 +1115,7 @@ def _bokeh_individual(result: dict) -> None:
                     y_range_name="smps",
                 )
 
-        # TSI 10 % coincidence threshold reference line on Ch1 panel only
+        # TSI 5 % coincidence-loss threshold reference line on Ch1 panel only
         if ch == "Ch1":
             p.add_layout(
                 Span(
@@ -1078,7 +1130,7 @@ def _bokeh_individual(result: dict) -> None:
                 Label(
                     x=int(t_start.timestamp() * 1000),  # type: ignore[union-attr]
                     y=COINCIDENCE_THRESHOLD_CM3,
-                    text="TSI 10% threshold",
+                    text="TSI 5% coincidence-loss limit",
                     text_font_size="10px",
                     text_color="gray",
                     x_units="data",
@@ -1227,7 +1279,7 @@ def _mpl_small_multiples(
         handles=legend_handles,
         loc="upper center",
         ncol=3,
-        bbox_to_anchor=(0.5, 1.02),
+        bbox_to_anchor=(0.5, 1.06),
         fontsize=_FS - 2,
         frameon=True,
     )
@@ -1340,11 +1392,7 @@ def _mpl_overlay(all_results: list[dict]) -> None:
     ax.set_xlabel("Minutes from ignition", fontsize=_FS)
     ax.set_ylabel("0.3-0.5 µm count (#/cm³)", fontsize=_FS)
     ax.tick_params(labelsize=_FS)
-    ax.set_title(
-        "AeroTrak 2 (Morning Room): Ch1 count, all burns aligned to ignition",
-        fontsize=_FS,
-    )
-    ax.legend(fontsize=_FS - 2, ncol=2, loc="upper right")
+    ax.legend(fontsize=_FS - 2, ncol=2, loc="lower right")
 
     fig_dir = get_common_file("coincidence_figures")
     save_fig(fig, fig_dir / "aerotrak_coincidence_overlay.png")
@@ -1360,7 +1408,7 @@ def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
     Figure S2 (SI). Scatter: x = peak total PM3 mass (ug/m3), y = L_central
     (Poisson coincidence-loss fraction), with vertical L_low-to-L_high error
     bars. Marker shape by location (Bedroom 2 circles, Morning Room squares).
-    Horizontal reference at L = 0.10 (manufacturer 10 % threshold).
+    Horizontal reference at L = 0.05 (manufacturer 5 % coincidence-loss limit).
 
     Per-point burn labels are intentionally omitted: every point sits far below
     the threshold and the points cluster, so inline labels overlapped badly. A
@@ -1403,16 +1451,17 @@ def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
             label=lbl,
         )
 
-    ax.axhline(0.10, color=REF_LINE, lw=0.9, ls=":", label="10 % threshold")
+    ax.axhline(0.05, color=REF_LINE, lw=0.9, ls=":", label="5 % coincidence-loss limit")
 
     # Single annotation on the margin below threshold (replaces overlapping
-    # per-point labels). Express it as orders of magnitude from the max L.
+    # per-point labels). Placed in the upper-left corner, clear of the data
+    # (which sits far below the 5 % coincidence-loss line near the bottom).
     max_l = max(r["L_central"] for r in records)
     if max_l > 0:
-        orders = np.log10(0.10 / max_l)
+        orders = np.log10(0.05 / max_l)
         ax.annotate(
-            f"all points > {orders:.0f} orders of magnitude\nbelow the 10 % threshold",
-            xy=(0.97, 0.06), xycoords="axes fraction", ha="right", va="bottom",
+            f"all points > {orders:.0f} orders of magnitude\nbelow the 5 % loss limit",
+            xy=(0.03, 0.50), xycoords="axes fraction", ha="left", va="center",
             fontsize=_FS - 2,
         )
 
@@ -1420,8 +1469,7 @@ def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
     ax.set_xlabel("Peak PM3 mass (µg/m³)", fontsize=_FS)
     ax.set_ylabel("Coincidence loss L (fraction)", fontsize=_FS)
     ax.tick_params(labelsize=_FS)
-    ax.set_title("Estimated coincidence loss vs peak PM3 mass", fontsize=_FS)
-    ax.legend(fontsize=_FS - 2, loc="upper left")
+    ax.legend(fontsize=_FS - 2, loc="upper right")
 
     fig_dir = get_common_file("coincidence_figures")
     save_fig(fig, fig_dir / "aerotrak_loss_vs_peakmass.png")
@@ -1593,8 +1641,9 @@ def _write_markdown(all_results: list[dict]) -> None:
         para2 = (
             f"Median peak 0.3-0.5 um count concentration across all non-sealed pairs "
             f"was {_fmt(med_npeak)} particles/cm3, a factor of "
-            f"{_fmt(factor_med, '.2f')} below the TSI manufacturer's 10% "
-            f"coincidence threshold of {COINCIDENCE_THRESHOLD_CM3:.1e} particles/cm3. "
+            f"{_fmt(factor_med, '.2f')} below the TSI manufacturer's 5% "
+            f"coincidence-loss limit of {COINCIDENCE_THRESHOLD_CM3:.1e} particles/cm3 "
+            f"(3,000,000 particles/ft3). "
             f"The Poisson dead-time model predicts coincidence losses of "
             f"{_fmt(min_L * 100, '.1f')}% to {_fmt(max_L * 100, '.1f')}% at the "
             f"observed concentrations. These predicted losses are far below the "
@@ -1715,9 +1764,10 @@ def _write_markdown(all_results: list[dict]) -> None:
         f"At the time of each reversal, the peak Ch1 count concentration ranged from "
         f"approximately {_fmt(min_npeak)} to {_fmt(max_npeak)} particles/cm3 "
         f"(median {_fmt(med_npeak_s)}), a factor of approximately "
-        f"{_fmt(factor_ms, '.2f')} below the manufacturer's 10% coincidence threshold "
-        f"of 1.4 x 10^5 particles/cm3; the Poisson dead-time model predicts coincidence "
-        f"losses of less than {_fmt(max_L_pct, '.1f')}% at these concentrations."
+        f"{_fmt(factor_ms, '.2f')} below the manufacturer's 5% coincidence-loss limit "
+        f"of 3,000,000 particles/ft3 (1.05 x 10^5 particles/cm3); the Poisson dead-time "
+        f"model predicts coincidence losses of less than {_fmt(max_L_pct, '.1f')}% at "
+        f"these concentrations."
     )
 
     s3 = (

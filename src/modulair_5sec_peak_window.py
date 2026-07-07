@@ -1042,8 +1042,8 @@ def _mpl_bin_response_grid(results: list[dict]) -> None:
         Line2D([0], [0], color=UNIT_COLOR["MODULAIR-PM2"], lw=4,
                label=UNIT_CONFIG["MODULAIR-PM2"]["location_label"]),
     ]
-    fig.legend(handles=handles, loc="upper center", ncol=4,
-               fontsize=_FS - 2, frameon=True, bbox_to_anchor=(0.5, 1.02))
+    fig.legend(handles=handles, loc="lower right", ncol=1,
+               fontsize=_FS - 2, frameon=True, bbox_to_anchor=(0.98, 0.04))
 
     fig_dir = get_common_file("quantaq_figures")
     save_fig(fig, fig_dir / "modulair_5sec_bin_response_grid.png")
@@ -1130,7 +1130,7 @@ def _mpl_qaqc_timeseries_fig2(results: list[dict]) -> None:
                          alpha=0.6, label="portal QA/QC removal")
     ax_strip.set_yticks([])
     ax_strip.set_ylabel("intervals", fontsize=_FS - 2)
-    ax_strip.legend(loc="upper right", fontsize=_FS - 3, frameon=True, ncol=2)
+    ax_strip.legend(loc="lower center", fontsize=_FS - 3, frameon=True, ncol=2)
     ax_strip.set_xlabel("Local time (EDT)", fontsize=_FS)
 
     # Vertical guides at the peak-window bounds across the data panels.
@@ -1138,6 +1138,14 @@ def _mpl_qaqc_timeseries_fig2(results: list[dict]) -> None:
         ax.axvline(t0, color=SHADE, ls=":", lw=1.0)
         ax.axvline(t1, color=SHADE, ls=":", lw=1.0)
         ax.tick_params(labelsize=_FS - 2)
+
+    # Thin and rotate the shared x-axis time ticks so the EDT labels stop
+    # colliding on the narrow peak window.
+    import matplotlib.dates as mdates
+    locator = mdates.AutoDateLocator(minticks=3, maxticks=6)
+    ax_strip.xaxis.set_major_locator(locator)
+    ax_strip.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+    fig.autofmt_xdate(rotation=30, ha="right")
 
     fig_dir = get_common_file("quantaq_figures")
     save_fig(fig, fig_dir / f"modulair_5sec_qaqc_timeseries_{FIG2_BURN}.png")
@@ -1163,7 +1171,7 @@ def _mpl_qaqc_overlap(results: list[dict]) -> None:
 
     rows = sorted(rows, key=lambda r: (int(r["burn"].replace("burn", "")), r["unit"]))
     labels = [
-        f"{r['burn']}\n{'PM1 / Bdrm' if r['unit'] == 'MODULAIR-PM1' else 'PM2 / MR'}"
+        f"{r['burn']}\n{'Bdrm' if r['unit'] == 'MODULAIR-PM1' else 'MR'}"
         for r in rows
     ]
     peak_dur = [r["peak_window_duration_minutes"] for r in rows]
@@ -1182,7 +1190,7 @@ def _mpl_qaqc_overlap(results: list[dict]) -> None:
             bar.set_hatch(hatch)
     ax.bar(x + w / 2, qaqc_dur, w, color=ROLE_COLORS["SMPS"], alpha=0.85)
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=_FS - 2)
+    ax.set_xticklabels(labels, fontsize=_FS - 3, rotation=30, ha="right")
     ax.set_ylabel("Duration (minutes)", fontsize=_FS)
     ax.set_title("Peak window vs portal QA/QC removal", fontsize=_FS)
     ax.tick_params(labelsize=_FS - 1)

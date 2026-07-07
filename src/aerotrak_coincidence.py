@@ -1,10 +1,12 @@
 """
 AeroTrak 9306-V2 Optical Coincidence Validation Analysis
 
-Validates the transient optical-coincidence claim for Section 3.2.2 of the WUI
-fire smoke instrument paper. For each AeroTrak unit and burn, detects bin
-reversals in the 0.3-0.5, 0.5-1.0, and 1.0-3.0 um channels, estimates
-coincidence losses via a Poisson dead-time model, checks counts conservation,
+Tests the optical-coincidence interpretation of the AeroTrak bin reversals for
+Section 3.2.2 of the WUI fire smoke instrument paper. For each AeroTrak unit
+and burn, detects bin reversals in the 0.3-0.5, 0.5-1.0, and 1.0-3.0 um
+channels, estimates coincidence losses via a Poisson dead-time model using the
+correctly converted manufacturer concentration-limit specification, compares
+peak counts against the Poisson rollover ceiling, checks counts conservation,
 and cross-checks against co-located SMPS number concentration (Bedroom 2 only).
 
 Inputs (all resolved through data_config.json):
@@ -24,6 +26,7 @@ Outputs:
 
 Author: Nathan Lima
 Created: 2026-04-30
+Updated: 2026-07-07 (corrected coincidence-limit unit conversion; see CONSTANTS)
 """
 
 import sys
@@ -59,18 +62,33 @@ from src.fig_style import (  # noqa: E402
 # CONSTANTS
 # ==============================================================================
 
-# Optical sensing volumes from Poisson model  L = 1 - exp(-n*V)
-# TSI Concentration Limits spec: 5 % coincidence loss at 3,000,000 particles/ft^3
-# (= 1.05e5 particles/cm3 using the manuscript's ft^3->cm^3 mapping) ->
-# V_CENTRAL = -ln(0.95)/1.05e5 ~= 4.9e-7 cm3.
-V_CENTRAL = 4.9e-7  # cm3 (central estimate)
-V_LOW = 3.3e-7  # cm3 (lower bound)
-V_HIGH = 6.5e-7  # cm3 (upper bound)
+# Optical sensing volume from Poisson model  L = 1 - exp(-n*V)
+# TSI Concentration Limits spec: 5 % coincidence loss at 3,000,000 particles/ft^3.
+# The spec is stated per cubic foot; 1 ft^3 = 28,316.85 cm^3, so the limit is
+# ~106 particles/cm3 (an earlier conversion divided by 28.3, the number of
+# liters per ft^3, and overstated the limit by a factor of 1000). The 2024
+# 9306-V2 spec sheet (rev N) gives an alternative statement, 10 % loss at
+# 5,950,000 particles/ft^3 (2.1e8 particles/m^3 = 210 particles/cm3), which
+# implies nearly the same sensing volume (5.0e-4 cm3), so the inferred V is
+# robust to the spec variant.
+FT3_TO_CM3 = 28_316.846592  # cm3 per cubic foot
 
-# Coincidence threshold: manufacturer 5 % coincidence-loss concentration
-# (3,000,000 particles/ft^3 -> 1.05e5 particles/cm3).
-COINCIDENCE_THRESHOLD_CM3 = 1.05e5  # particles/cm3
 COINCIDENCE_LOSS_SPEC = 0.05  # manufacturer Concentration Limits coincidence loss
+COINCIDENCE_THRESHOLD_CM3 = 3.0e6 / FT3_TO_CM3  # ~105.9 particles/cm3
+
+V_CENTRAL = float(-np.log(1.0 - COINCIDENCE_LOSS_SPEC) / COINCIDENCE_THRESHOLD_CM3)  # ~4.8e-4 cm3
+# Same +/- one-third band previously applied to the sensing-volume estimate,
+# now spanning the two published spec variants comfortably.
+V_LOW = V_CENTRAL * (2.0 / 3.0)
+V_HIGH = V_CENTRAL * (4.0 / 3.0)
+
+# Rollover ceiling of the Poisson model: the measured count n*exp(-n*V) can
+# never exceed exp(-1)/V regardless of the true concentration, and it declines
+# with increasing true concentration beyond n = 1/V. Peak counts pinned near
+# this ceiling across burns are the signature of a counter past its limit.
+N_MEAS_CEILING_CM3 = float(np.exp(-1.0) / V_CENTRAL)  # ~760 particles/cm3
+N_MEAS_CEILING_LOW = float(np.exp(-1.0) / V_HIGH)
+N_MEAS_CEILING_HIGH = float(np.exp(-1.0) / V_LOW)
 
 # Reversal detection parameters
 REVERSAL_FRAC = 0.5  # n_min < REVERSAL_FRAC * n_peak -> reversal present
@@ -170,6 +188,7 @@ _CSV_COLS = [
     "L_low",
     "L_high",
     "factor_vs_threshold",
+    "n_peak_frac_of_ceiling",
     "peak_total_PM3_mass_ug_m3",
     "counts_conserved",
     "SMPS_ratio_during_vs_after",
@@ -732,10 +751,14 @@ def _coincidence_loss(n_cm3: float) -> tuple[float, float, float]:
     Estimate coincidence loss fraction L = 1 - exp(-n * V) for the three
     sensing-volume estimates.
 
+    Evaluated at the measured count concentration, which understates the true
+    concentration once losses are appreciable, so each L is a lower bound on
+    the actual loss.
+
     Parameters
     ----------
     n_cm3 : float
-        Peak number concentration of the 0.3-0.5 um bin (#/cm3).
+        Peak measured number concentration of the 0.3-0.5 um bin (#/cm3).
 
     Returns
     -------
@@ -933,13 +956,17 @@ def analyze_burn_instrument(
     t_min_ch1 = r1["t_min"]
     ch1_col = r1["col"]
 
-    # Coincidence loss estimates and threshold ratio
+    # Coincidence loss estimates, threshold ratio, and rollover-ceiling ratio.
+    # L is evaluated at the MEASURED count, which understates the true
+    # concentration when losses are appreciable, so L is a lower bound.
     if not np.isnan(n_peak):
         L_c, L_lo, L_hi = _coincidence_loss(n_peak)
         factor_vs_threshold = n_peak / COINCIDENCE_THRESHOLD_CM3  # type: ignore[operator]
+        n_peak_frac_of_ceiling = n_peak / N_MEAS_CEILING_CM3  # type: ignore[operator]
     else:
         L_c = L_lo = L_hi = np.nan
         factor_vs_threshold = np.nan
+        n_peak_frac_of_ceiling = np.nan
 
     # Counts conservation
     conserved = _counts_conserved(df_day, t_peak, t_min_ch1)
@@ -989,6 +1016,7 @@ def analyze_burn_instrument(
         "L_low": L_lo,
         "L_high": L_hi,
         "factor_vs_threshold": factor_vs_threshold,
+        "n_peak_frac_of_ceiling": n_peak_frac_of_ceiling,
         "peak_total_PM3_mass_ug_m3": peak_pm3_mass,
         "counts_conserved": conserved,
         "SMPS_ratio_during_vs_after": smps_ratio,
@@ -1115,29 +1143,35 @@ def _bokeh_individual(result: dict) -> None:
                     y_range_name="smps",
                 )
 
-        # TSI 5 % coincidence-loss threshold reference line on Ch1 panel only
+        # Ch1 panel only: TSI 5 % coincidence-loss limit and the Poisson
+        # rollover ceiling (the maximum count the instrument can report; the
+        # observed peaks pin near this line, the overload signature).
         if ch == "Ch1":
-            p.add_layout(
-                Span(
-                    location=COINCIDENCE_THRESHOLD_CM3,
-                    dimension="width",
-                    line_color="gray",
-                    line_dash="dotted",
-                    line_width=1,
+            for y_ref, dash_ref, text_ref in [
+                (COINCIDENCE_THRESHOLD_CM3, "dotted", "TSI 5% coincidence-loss limit"),
+                (N_MEAS_CEILING_CM3, "dashed", "Poisson rollover ceiling"),
+            ]:
+                p.add_layout(
+                    Span(
+                        location=y_ref,
+                        dimension="width",
+                        line_color="gray",
+                        line_dash=dash_ref,
+                        line_width=1,
+                    )
                 )
-            )
-            p.add_layout(
-                Label(
-                    x=int(t_start.timestamp() * 1000),  # type: ignore[union-attr]
-                    y=COINCIDENCE_THRESHOLD_CM3,
-                    text="TSI 5% coincidence-loss limit",
-                    text_font_size="10px",
-                    text_color="gray",
-                    x_units="data",
-                    y_units="data",
-                    y_offset=3,
+                p.add_layout(
+                    Label(
+                        x=int(t_start.timestamp() * 1000),  # type: ignore[union-attr]
+                        y=y_ref,
+                        text=text_ref,
+                        text_font_size="10px",
+                        text_color="gray",
+                        x_units="data",
+                        y_units="data",
+                        y_offset=3,
+                    )
                 )
-            )
 
         # Vertical event lines
         events = [
@@ -1406,14 +1440,15 @@ def _mpl_overlay(all_results: list[dict]) -> None:
 def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
     """
     Figure S2 (SI). Scatter: x = peak total PM3 mass (ug/m3), y = L_central
-    (Poisson coincidence-loss fraction), with vertical L_low-to-L_high error
-    bars. Marker shape by location (Bedroom 2 circles, Morning Room squares).
-    Horizontal reference at L = 0.05 (manufacturer 5 % coincidence-loss limit).
+    (Poisson coincidence-loss fraction at the measured peak count), with
+    vertical L_low-to-L_high error bars. Marker shape by location (Bedroom 2
+    circles, Morning Room squares). Horizontal reference at L = 0.05
+    (manufacturer 5 % coincidence-loss limit).
 
-    Per-point burn labels are intentionally omitted: every point sits far below
-    the threshold and the points cluster, so inline labels overlapped badly. A
-    single annotation states the margin below threshold instead; per-point
-    identity is available in the per-burn CSV.
+    Per-point burn labels are intentionally omitted: the points cluster, so
+    inline labels overlapped badly. A single annotation notes that every point
+    exceeds the specified loss limit and that L at the measured count is a
+    lower bound; per-point identity is available in the per-burn CSV.
     """
     records = [
         r
@@ -1453,15 +1488,16 @@ def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
 
     ax.axhline(0.05, color=REF_LINE, lw=0.9, ls=":", label="5 % coincidence-loss limit")
 
-    # Single annotation on the margin below threshold (replaces overlapping
-    # per-point labels). Placed in the upper-left corner, clear of the data
-    # (which sits far below the 5 % coincidence-loss line near the bottom).
-    max_l = max(r["L_central"] for r in records)
-    if max_l > 0:
-        orders = np.log10(0.05 / max_l)
+    # Single annotation (replaces overlapping per-point labels). The measured
+    # count understates the true concentration under overload, so the plotted
+    # losses are lower bounds; state both facts once rather than per point.
+    min_l = min(r["L_central"] for r in records)
+    if min_l > 0:
         ax.annotate(
-            f"all points > {orders:.0f} orders of magnitude\nbelow the 5 % loss limit",
-            xy=(0.03, 0.50), xycoords="axes fraction", ha="left", va="center",
+            f"all points exceed the 5 % loss limit\n"
+            f"(minimum L = {min_l:.0%}); L at the measured\n"
+            f"count is a lower bound on the actual loss",
+            xy=(0.03, 0.35), xycoords="axes fraction", ha="left", va="center",
             fontsize=_FS - 2,
         )
 
@@ -1469,7 +1505,7 @@ def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
     ax.set_xlabel("Peak PM3 mass (µg/m³)", fontsize=_FS)
     ax.set_ylabel("Coincidence loss L (fraction)", fontsize=_FS)
     ax.tick_params(labelsize=_FS)
-    ax.legend(fontsize=_FS - 2, loc="upper right")
+    ax.legend(fontsize=_FS - 2, loc="lower right")
 
     fig_dir = get_common_file("coincidence_figures")
     save_fig(fig, fig_dir / "aerotrak_loss_vs_peakmass.png")
@@ -1518,9 +1554,17 @@ def _write_csv(all_results: list[dict]) -> None:
         }
 
     summary = {}
-    for col in ("n_peak_cm3", "reversal_duration_minutes", "L_central"):
+    for col in (
+        "n_peak_cm3",
+        "reversal_duration_minutes",
+        "L_central",
+        "factor_vs_threshold",
+        "n_peak_frac_of_ceiling",
+    ):
         summary.update(_q_stats(col))
 
+    summary["coincidence_threshold_cm3"] = COINCIDENCE_THRESHOLD_CM3
+    summary["n_meas_ceiling_cm3"] = N_MEAS_CEILING_CM3
     summary["n_reversal_present"] = int(rev.shape[0])
     summary["n_total_pairs"] = int(valid.shape[0])
     summary["median_peak_PM3_with_reversal_ug_m3"] = (
@@ -1638,24 +1682,40 @@ def _write_markdown(all_results: list[dict]) -> None:
             f"about 28 ug/m3, neither representative of the dense-smoke phenomenon."
         )
 
+        at1_np = np.array([r["n_peak_cm3"] for r in valid if r["instrument"] == "AeroTrak1"])
+        at2_np = np.array([r["n_peak_cm3"] for r in valid if r["instrument"] == "AeroTrak2"])
+
         para2 = (
             f"Median peak 0.3-0.5 um count concentration across all non-sealed pairs "
             f"was {_fmt(med_npeak)} particles/cm3, a factor of "
-            f"{_fmt(factor_med, '.2f')} below the TSI manufacturer's 5% "
-            f"coincidence-loss limit of {COINCIDENCE_THRESHOLD_CM3:.1e} particles/cm3 "
-            f"(3,000,000 particles/ft3). "
+            f"{_fmt(factor_med, '.1f')} ABOVE the TSI manufacturer's 5% "
+            f"coincidence-loss limit of {COINCIDENCE_THRESHOLD_CM3:.0f} particles/cm3 "
+            f"(3,000,000 particles/ft3 at 28,317 cm3 per ft3). "
             f"The Poisson dead-time model predicts coincidence losses of "
-            f"{_fmt(min_L * 100, '.1f')}% to {_fmt(max_L * 100, '.1f')}% at the "
-            f"observed concentrations. These predicted losses are far below the "
-            f"magnitude of the observed channel suppression (50-100% of the local "
-            f"maximum), ruling out Poisson coincidence as the primary mechanism."
+            f"{_fmt(min_L * 100, '.0f')}% to {_fmt(max_L * 100, '.0f')}% at the "
+            f"measured counts; these are lower bounds because the measured count "
+            f"understates the true concentration once losses are appreciable. The "
+            f"model also caps the reportable count at exp(-1)/V, approximately "
+            f"{N_MEAS_CEILING_CM3:.0f} particles/cm3 (the rollover ceiling), beyond "
+            f"which the reported count declines as the true concentration rises. The "
+            f"observed peaks behave accordingly: AeroTrak2 peaked between "
+            f"{_fmt(float(np.min(at2_np)), '.0f')} and "
+            f"{_fmt(float(np.max(at2_np)), '.0f')} particles/cm3 across the Morning "
+            f"Room burns and AeroTrak1 between {_fmt(float(np.min(at1_np)), '.0f')} "
+            f"and {_fmt(float(np.max(at1_np)), '.0f')} particles/cm3 across the "
+            f"non-sealed Bedroom 2 burns, narrow unit-specific ceilings that did not "
+            f"track smoke intensity. Peak counts pinned at such a ceiling are the "
+            f"signature of a single-particle counter driven past its concentration "
+            f"limit."
         )
 
         para3 = (
             f"{n_fail} of {n_rev} reversal pairs showed a total 6-bin count "
             f"concentration decrease greater than {CONSERVATION_TOL * 100:.0f}% at "
-            f"the reversal trough, inconsistent with the count-redistribution "
-            f"mechanism of Poisson coincidence."
+            f"the reversal trough. Severe coincidence produces exactly this "
+            f"behavior: particle merging and dead-time losses reduce the total "
+            f"registered count, and count conservation across bins holds only in "
+            f"the mild-loss limit."
         )
 
         para4 = (
@@ -1663,9 +1723,12 @@ def _write_markdown(all_results: list[dict]) -> None:
             f"timing of the Ch1 reversal onset and the PM3 mass peak was "
             f"determinable: the reversal onset preceded the mass peak in "
             f"{n_precede}, coincided with it in {n_at_peak}, and followed it in "
-            f"{n_follow}. Onset is therefore not locked to the instantaneous "
-            f"particle concentration, inconsistent with a mechanism that scales "
-            f"monotonically with it."
+            f"{n_follow}. Onset before the mass peak is the expected behavior for "
+            f"a counter whose reported count begins falling once the true "
+            f"concentration passes the rollover ceiling while smoke is still "
+            f"accumulating. Where the onset followed the reported mass peak, the "
+            f"PM3 series is itself derived from the distorted counts, so the "
+            f"ordering in those pairs is weakly constrained."
         )
 
         parts = [
@@ -1695,6 +1758,7 @@ def _write_markdown(all_results: list[dict]) -> None:
     med_npeak_s = float(np.median(n_peak_arr)) if len(n_peak_arr) > 0 else np.nan
     factor_ms = med_npeak_s / COINCIDENCE_THRESHOLD_CM3 if not np.isnan(med_npeak_s) else np.nan
     max_L_pct = float(np.max(L_arr)) * 100 if len(L_arr) > 0 else np.nan
+    min_L_pct = float(np.min(L_arr)) * 100 if len(L_arr) > 0 else np.nan
     med_L_pct = float(np.median(L_arr)) * 100 if len(L_arr) > 0 else np.nan
 
     n_fail_s = len(cons_fails)
@@ -1764,17 +1828,23 @@ def _write_markdown(all_results: list[dict]) -> None:
         f"At the time of each reversal, the peak Ch1 count concentration ranged from "
         f"approximately {_fmt(min_npeak)} to {_fmt(max_npeak)} particles/cm3 "
         f"(median {_fmt(med_npeak_s)}), a factor of approximately "
-        f"{_fmt(factor_ms, '.2f')} below the manufacturer's 5% coincidence-loss limit "
-        f"of 3,000,000 particles/ft3 (1.05 x 10^5 particles/cm3); the Poisson dead-time "
-        f"model predicts coincidence losses of less than {_fmt(max_L_pct, '.1f')}% at "
-        f"these concentrations."
+        f"{_fmt(factor_ms, '.1f')} above the manufacturer's 5% coincidence-loss limit "
+        f"of 3,000,000 particles/ft3 (approximately "
+        f"{COINCIDENCE_THRESHOLD_CM3:.0f} particles/cm3); the Poisson dead-time model "
+        f"predicts coincidence losses of at least {_fmt(min_L_pct, '.0f')}% to "
+        f"{_fmt(max_L_pct, '.0f')}% at the measured counts (lower bounds, since the "
+        f"measured count understates the true concentration), and it caps the "
+        f"reportable count at a rollover ceiling of approximately "
+        f"{N_MEAS_CEILING_CM3:.0f} particles/cm3, near which the observed per-unit "
+        f"peaks cluster."
     )
 
     s3 = (
         f"In {n_fail_s} of {n_rev} pairs where a reversal was detected, the sum of "
         f"count concentrations across all six AeroTrak bins decreased by more than "
-        f"{CONSERVATION_TOL * 100:.0f}% at the reversal trough, inconsistent with the "
-        f"count-redistribution mechanism of Poisson coincidence."
+        f"{CONSERVATION_TOL * 100:.0f}% at the reversal trough, consistent with the "
+        f"particle merging and dead-time losses of severe coincidence; count "
+        f"conservation across bins holds only in the mild-loss limit."
     )
 
     s4 = (
@@ -1793,16 +1863,22 @@ def _write_markdown(all_results: list[dict]) -> None:
         f"{_fmt(ex_dur, '.0f')} minutes while the co-located total PM3 mass "
         f"concentration reached approximately {_fmt(ex_pm3, '.0f')} ug/m3; "
         f"the Poisson coincidence loss estimated from the maximum observed Ch1 count "
-        f"is approximately {_fmt(ex_L_pct, '.1f')}%, far below the magnitude of the "
-        f"observed suppression ({_fmt(ex_supp, '.0f')}% of the local maximum)."
+        f"is at least {_fmt(ex_L_pct, '.0f')}%, and the near-complete observed "
+        f"suppression ({_fmt(ex_supp, '.0f')}% of the local maximum) is consistent "
+        f"with the true concentration rising far beyond the rollover ceiling of "
+        f"approximately {N_MEAS_CEILING_CM3:.0f} particles/cm3, where the reported "
+        f"count falls toward zero."
     )
 
     s6 = (
         f"The relative timing of the Ch1 reversal onset and the PM3 mass peak was "
         f"determinable in {n_timing_determinable} of {n_rev} reversal pairs; the "
-        f"onset preceded the mass peak in {n_precede}, coincided with it in "
-        f"{n_at_peak}, and followed it in {n_follow}, so the reversal is not locked "
-        f"to the instantaneous particle concentration."
+        f"onset preceded the mass peak in {n_precede} and coincided with it in "
+        f"{n_at_peak}, as expected for a counter whose reported count begins "
+        f"falling once the true concentration passes the rollover ceiling while "
+        f"smoke is still accumulating; in the {n_follow} pairs where the onset "
+        f"followed the reported mass peak, the PM3 series is itself derived from "
+        f"the distorted counts, so the ordering is weakly constrained."
     )
 
     ms_text = (
@@ -1811,7 +1887,7 @@ def _write_markdown(all_results: list[dict]) -> None:
         "burn-instrument pairs. Insert into manuscript text._\n\n"
         "---\n\n"
         f'**Sentence 1 (reversal prevalence):** "{s1}"\n\n'
-        f'**Sentence 2 (coincidence hypothesis test - null result):** "{s2}"\n\n'
+        f'**Sentence 2 (coincidence overload test):** "{s2}"\n\n'
         f'**Sentence 3 (counts conservation):** "{s3}"\n\n'
         f'**Sentence 4 (practical threshold):** "{s4}"\n\n'
         f'**Sentence 5 (worked example: {ex_burn}, {ex_loc}):** "{s5}"\n\n'
@@ -1829,7 +1905,11 @@ def _write_markdown(all_results: list[dict]) -> None:
         f"| Reversal-onset timing determinable | {n_timing_determinable} of {n_rev} |\n"
         f"| Onset preceded / at / followed mass peak | "
         f"{n_precede} / {n_at_peak} / {n_follow} |\n"
-        f"| Factor below TSI threshold (median) | {_fmt(factor_ms, '.2f')} |\n"
+        f"| TSI 5% coincidence-loss limit (#/cm3) | {COINCIDENCE_THRESHOLD_CM3:.0f} |\n"
+        f"| Factor above TSI limit (median) | {_fmt(factor_ms, '.1f')} |\n"
+        f"| Poisson rollover ceiling (#/cm3) | {N_MEAS_CEILING_CM3:.0f} |\n"
+        f"| Predicted L at measured counts (min to max, %) | "
+        f"{_fmt(min_L_pct, '.0f')} to {_fmt(max_L_pct, '.0f')} |\n"
     )
     (out_dir / "aerotrak_manuscript_sentences.md").write_text(ms_text, encoding="utf-8")
     print("    [MD] aerotrak_manuscript_sentences.md")

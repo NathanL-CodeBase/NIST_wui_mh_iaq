@@ -103,8 +103,8 @@ DUSTTRAK_CF_LOW = 4.0    # Delp & Singer 2020 (factor ~4 for fresh wildfire smok
 DUSTTRAK_CF_HIGH = 1.6   # low end of biomass-smoke range (McNamara 2011 ~1.6)
 DENSITY_LOW = 1.2        # Reid et al. 2005 unit-density correction, low end
 DENSITY_HIGH = 1.5       # Reid et al. 2005 unit-density correction, high end
-PURPLEAIR_CF_LOW = 2.1   # PurpleAir Plantower overestimate, smoke (high divisor)
-PURPLEAIR_CF_HIGH = 1.6  # low divisor
+PURPLEAIR_CF_LOW = 2.1   # wildfire-smoke slope high end (Delp & Singer 2020; Barkjohn et al. 2022)
+PURPLEAIR_CF_HIGH = 1.6  # wildfire-smoke slope low end (Delp & Singer 2020; Barkjohn et al. 2022)
 
 # Top-percentile used for the sustained peak reading.
 PEAK_PCTL = 0.90  # mean of readings at/above the 90th percentile (top 10%)
@@ -677,7 +677,7 @@ def _fig_burn09_bars(example: dict, fig_dir: Path) -> None:
                 example["mass_mid_low"],
                 example["mass_mid_high"],
                 ROLE_COLORS["PurpleAir"],
-                "corrected /1.6 to /2.1",
+                "corrected /1.6 to /2.1\n(Delp & Singer 2020; Barkjohn et al. 2022)",
             )
         )
     # MODULAIR-PM2 portal PM2.5: a single QA/QC-bounded reading (Section 3.2.3),

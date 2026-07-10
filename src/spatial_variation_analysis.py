@@ -164,6 +164,17 @@ CEILING_FRAC_FLAG = 0.9
 # Arrival-lag crossing thresholds (primary, sensitivity)
 ARRIVAL_THRESHOLDS_UG_M3 = (100.0, 50.0)
 
+# AeroTrak1 (Bedroom 2) has no valid record before burn3 (Table 3: n/a for
+# burns 1 and 2), so all Bedroom-2-dependent AeroTrak metrics are restricted to
+# burn3-burn10, matching the coverage in aerotrak_coincidence.py.
+AEROTRAK_BEDROOM_MIN_BURN = 3
+
+# Raw differential-count columns used to fingerprint a row when removing Morning
+# Room data merged into the Bedroom 2 export (see _drop_foreign_rows). A row is
+# foreign only if its timestamp AND all six differential counts match the
+# Morning Room file exactly, so genuine Bedroom 2 samples are always kept.
+_AEROTRAK_DIFF_COLS = [f"Ch{i} Diff (#)" for i in range(1, 7)]
+
 print(f"[OK] Data root: {data_root}")
 print(f"[OK] Output path: {OUTPUT_PATH}")
 print(f"[OK] Burn log loaded from: {burn_log_path}")
@@ -289,12 +300,78 @@ def calculate_rolling_average_burn3(data):
 # ============================================================================
 # DATA PROCESSING FUNCTIONS
 # ============================================================================
+def _drop_foreign_rows(df, other_instrument_key):
+    """Remove Bedroom 2 rows that are exact copies of a Morning Room record.
+
+    On at least one burn day (2024-05-06) the Bedroom 2 all_data.xlsx export was
+    merged with a copy of the Morning Room record, so the Bedroom 2 file carries
+    both instruments' rows on that date. The foreign rows insert Morning Room
+    values that corrupt the inter-room comparison (they make the Bedroom 2 series
+    a near-copy of the Morning Room series and shift the arrival-lag first
+    crossing). This mirrors the correction in aerotrak_coincidence.py so both
+    analyses use the same Bedroom 2 record.
+
+    A row is treated as foreign only when its raw timestamp and all six
+    differential counts match a Morning Room row exactly, so genuine Bedroom 2
+    samples (which never coincide with the Morning Room down to the count) are
+    always kept. Days with no overlap are returned unchanged.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Raw Bedroom 2 rows (pre time shift), column names already stripped.
+    other_instrument_key : str
+        data_config key for the Morning Room file (e.g. 'aerotrak_kitchen').
+
+    Returns
+    -------
+    pd.DataFrame
+        df with exact Morning Room duplicate rows removed. Unchanged if the
+        fingerprint columns are absent.
+    """
+    other_path = get_instrument_path(other_instrument_key) / "all_data.xlsx"
+    other = pd.read_excel(other_path)
+    other.columns = other.columns.str.strip()
+
+    if "Date and Time" not in df.columns or "Date and Time" not in other.columns:
+        return df  # cannot fingerprint; leave unchanged
+
+    df = df.copy()
+    df["Date and Time"] = pd.to_datetime(df["Date and Time"])
+    other["Date and Time"] = pd.to_datetime(other["Date and Time"])
+
+    key_cols = ["Date and Time"] + [c for c in _AEROTRAK_DIFF_COLS if c in df.columns]
+    if not set(key_cols).issubset(other.columns):
+        return df  # cannot fingerprint; leave unchanged
+
+    foreign_keys = set(other[key_cols].itertuples(index=False, name=None))
+    is_foreign = [
+        row in foreign_keys
+        for row in df[key_cols].itertuples(index=False, name=None)
+    ]
+    n_dropped = int(np.sum(is_foreign))
+    if n_dropped:
+        days = sorted(df.loc[is_foreign, "Date and Time"].dt.date.unique().tolist())
+        print(
+            f"  [loader] Dropped {n_dropped} Morning Room duplicate rows merged "
+            f"into the Bedroom 2 record on {', '.join(str(d) for d in days)}."
+        )
+    return df[[not f for f in is_foreign]].reset_index(drop=True)
+
+
 def process_aerotrak_data(file_path, instrument="AeroTrakB"):
     """Process AeroTrak data with complete conversion from particle counts to mass concentration"""
     # Load the AeroTrak data from the Excel file
     aerotrak_data = pd.read_excel(file_path)
     # Strip whitespace from column names to avoid issues
     aerotrak_data.columns = aerotrak_data.columns.str.strip()
+
+    # Remove Morning Room rows merged into the Bedroom 2 export before any
+    # processing, so the Bedroom 2 series is not contaminated with Morning Room
+    # values. Matches the correction in aerotrak_coincidence.py; applied to the
+    # Bedroom 2 (AeroTrakB) load only.
+    if instrument == "AeroTrakB":
+        aerotrak_data = _drop_foreign_rows(aerotrak_data, "aerotrak_kitchen")
     # Define size channels and initialize a dictionary for size values
     size_channels = ["Ch1", "Ch2", "Ch3", "Ch4", "Ch5", "Ch6"]
     size_values = {}
@@ -1021,8 +1098,16 @@ def analyze_spatial_variation():
             print(f"  CR Box not used for {burn_id}, skipping")
             continue
 
-        # Process AeroTrak data for this burn
-        if aerotrakb_data is not None and aerotrakk_data is not None:
+        burn_num = int(burn_id.replace("burn", ""))
+
+        # Process AeroTrak data for this burn. AeroTrak1 (Bedroom 2) has no valid
+        # record before burn3, so Bedroom-dependent metrics are restricted to
+        # burn3-burn10 (see AEROTRAK_BEDROOM_MIN_BURN).
+        if (
+            burn_num >= AEROTRAK_BEDROOM_MIN_BURN
+            and aerotrakb_data is not None
+            and aerotrakk_data is not None
+        ):
             print("\n  Processing AeroTrak...")
 
             for pm_size in aerotrak_pm_sizes:
@@ -1223,6 +1308,19 @@ def analyze_spatial_variation():
         for burn_id in burn_log["Burn ID"]:
             burn_info = burn_log[burn_log["Burn ID"] == burn_id]
             burn_date = burn_info["Date"].iloc[0]
+
+            # No valid Bedroom 2 AeroTrak record before burn3, so the inter-room
+            # lag is undefined there; record NaN rather than a spurious crossing.
+            if int(burn_id.replace("burn", "")) < AEROTRAK_BEDROOM_MIN_BURN:
+                lag_rows.append(
+                    {
+                        "Burn_ID": burn_id,
+                        "arrival_lag_min_100": np.nan,
+                        "arrival_lag_min_50": np.nan,
+                    }
+                )
+                print(f"  {burn_id}: skipped (no Bedroom 2 record before burn3)")
+                continue
 
             lag_100 = calculate_arrival_lag(
                 aerotrakb_data,

@@ -41,6 +41,12 @@ Methodology:
 Author: Nathan Lima
 Institution: National Institute of Standards and Technology (NIST)
 Date: 2025
+Update log:
+    2026-07-10 (N. Lima): Added Section 3.3 static manuscript figures via
+        src/fig_style.py (apply_est_style, Okabe-Ito, figsize, save_fig): a
+        per-burn inter-room arrival-lag panel (100 and 50 ug/m^3 thresholds,
+        zero reference, door-closed burns marked) and a per-burn reliable-regime
+        R_sub panel (IQR whiskers, ratio=1 reference).
 """
 
 import os
@@ -54,6 +60,12 @@ from bokeh.plotting import figure, output_file, save
 from scipy import stats
 from scipy.interpolate import interp1d, make_interp_spline
 
+# Matplotlib is used only for the Section 3.3 static manuscript figures.
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+
 # ============================================================================
 # SYSTEM DETECTION AND PATH SETUP
 # ============================================================================
@@ -66,6 +78,13 @@ sys.path.insert(0, parent_dir)
 from scripts import get_script_metadata  # noqa: E402
 from scripts.plotting_utils import apply_text_formatting  # noqa: E402
 from src.data_paths import get_common_file, get_data_root  # noqa: E402
+from src.fig_style import (  # noqa: E402
+    OKABE_ITO,
+    REF_LINE,
+    apply_est_style,
+    figsize,
+    save_fig,
+)
 
 # Get portable paths
 BASE_DIR = str(get_data_root())
@@ -561,6 +580,160 @@ def create_spatial_variation_plot(
 
 
 # ============================================================================
+# SECTION 3.3 STATIC MANUSCRIPT FIGURES (arrival lag, R_sub)
+# ============================================================================
+def _burn_sort_key(burn_id):
+    """Sort 'burnN' labels numerically."""
+    try:
+        return int(str(burn_id).replace("burn", ""))
+    except ValueError:
+        return 999
+
+
+def plot_arrival_lag(aerotrak_df, output_dir):
+    """
+    Static per-burn inter-room smoke arrival lag (AeroTrak PM3).
+
+    Plots arrival_lag_min at 100 and 50 ug/m^3 for each burn, with a zero
+    reference line (simultaneous arrival). Negative values mean the Morning Room
+    crossed the threshold first. Burns with the bedroom door closed are marked.
+
+    Parameters
+    ----------
+    aerotrak_df : pd.DataFrame
+        AeroTrak sheet with arrival_lag_min_100 / _50, bedroom_door_closed.
+    output_dir : str
+        Directory to write the figure into.
+    """
+    needed = {"arrival_lag_min_100", "arrival_lag_min_50"}
+    if not needed.issubset(aerotrak_df.columns):
+        print("  [skip] arrival-lag columns not present")
+        return
+
+    per_burn = aerotrak_df.drop_duplicates(subset="Burn_ID").copy()
+    per_burn = per_burn.sort_values("Burn_ID", key=lambda s: s.map(_burn_sort_key))
+    # Keep burns that have at least one lag value.
+    per_burn = per_burn[
+        per_burn["arrival_lag_min_100"].notna()
+        | per_burn["arrival_lag_min_50"].notna()
+    ]
+    if per_burn.empty:
+        print("  [skip] no arrival-lag values to plot")
+        return
+
+    labels = [str(b).replace("burn", "Burn ") for b in per_burn["Burn_ID"]]
+    x = np.arange(len(labels))
+    apply_est_style()
+    fig, ax = plt.subplots(figsize=figsize("onehalf", aspect=0.7))
+
+    ax.axhline(0.0, color=REF_LINE, lw=1.0, ls="--", zorder=1)
+    ax.scatter(
+        x - 0.08,
+        per_burn["arrival_lag_min_100"],
+        color=OKABE_ITO["blue"],
+        marker="o",
+        s=42,
+        label="100 ug/m3",
+        zorder=3,
+    )
+    ax.scatter(
+        x + 0.08,
+        per_burn["arrival_lag_min_50"],
+        color=OKABE_ITO["orange"],
+        marker="s",
+        s=42,
+        label="50 ug/m3",
+        zorder=3,
+    )
+
+    # Mark door-closed burns under the x-axis label.
+    if "bedroom_door_closed" in per_burn.columns:
+        for xi, closed in zip(x, per_burn["bedroom_door_closed"]):
+            if bool(closed) is True:
+                ax.annotate(
+                    "door closed",
+                    xy=(xi, 0),
+                    xytext=(xi, 0.02),
+                    textcoords=("data", "axes fraction"),
+                    ha="center",
+                    va="bottom",
+                    fontsize=8,
+                    rotation=90,
+                    color=OKABE_ITO["vermillion"],
+                )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.set_ylabel("Arrival lag (min)\nMorning Room minus Bedroom 2")
+    ax.legend(frameon=False, loc="best")
+
+    out = os.path.join(output_dir, "spatial_arrival_lag.png")
+    save_fig(fig, out)
+    print(f"  Saved arrival-lag figure to: {out}")
+
+
+def plot_r_sub(aerotrak_df, output_dir, pm_size="PM3 (µg/m³)"):
+    """
+    Static per-burn reliable-regime ratio R_sub (Bedroom 2 / Morning Room).
+
+    Plots R_sub_median with IQR whiskers for each burn at the given PM size, with
+    a ratio=1 reference line (spatial uniformity in the reliable regime).
+
+    Parameters
+    ----------
+    aerotrak_df : pd.DataFrame
+        AeroTrak sheet with R_sub_median / _iqr_low / _iqr_high, PM_Size.
+    output_dir : str
+        Directory to write the figure into.
+    pm_size : str
+        PM size row to plot (default AeroTrak PM3).
+    """
+    if "R_sub_median" not in aerotrak_df.columns:
+        print("  [skip] R_sub columns not present")
+        return
+
+    sub = aerotrak_df[aerotrak_df["PM_Size"] == pm_size].copy()
+    sub = sub[sub["R_sub_median"].notna()]
+    sub = sub.sort_values("Burn_ID", key=lambda s: s.map(_burn_sort_key))
+    if sub.empty:
+        print("  [skip] no R_sub values to plot")
+        return
+
+    labels = [str(b).replace("burn", "Burn ") for b in sub["Burn_ID"]]
+    x = np.arange(len(labels))
+    med = sub["R_sub_median"].to_numpy()
+    lo = sub["R_sub_iqr_low"].to_numpy()
+    hi = sub["R_sub_iqr_high"].to_numpy()
+    yerr = np.vstack([med - lo, hi - med])
+
+    apply_est_style()
+    fig, ax = plt.subplots(figsize=figsize("onehalf", aspect=0.7))
+
+    ax.axhline(1.0, color=REF_LINE, lw=1.0, ls="--", zorder=1)
+    ax.errorbar(
+        x,
+        med,
+        yerr=yerr,
+        fmt="o",
+        color=OKABE_ITO["blue"],
+        ecolor=OKABE_ITO["blue"],
+        elinewidth=1.2,
+        capsize=3,
+        markersize=6,
+        zorder=3,
+    )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.set_ylabel("R_sub, Bedroom 2 / Morning Room\n(both PM3 < 500 ug/m3)")
+    ax.set_ylim(bottom=0)
+
+    out = os.path.join(output_dir, "spatial_r_sub.png")
+    save_fig(fig, out)
+    print(f"  Saved R_sub figure to: {out}")
+
+
+# ============================================================================
 # MAIN EXECUTION
 # ============================================================================
 def main():
@@ -720,6 +893,15 @@ def main():
         output_file(output_path)
         save(layout)
         print(f"  Saved plot to: {output_path}")
+
+    # Section 3.3 static manuscript figures (arrival lag, R_sub).
+    print(f"\n{'=' * 60}")
+    print("SECTION 3.3 STATIC FIGURES")
+    print(f"{'=' * 60}")
+    # Use the full AeroTrak sheet (all burns), not the CR-Box-filtered subset.
+    aerotrak_full, _ = load_spatial_variation_data(EXCEL_FILE_PATH)
+    plot_arrival_lag(aerotrak_full, OUTPUT_DIR)
+    plot_r_sub(aerotrak_full, OUTPUT_DIR)
 
     print("\n" + "=" * 80)
     print("PLOTTING COMPLETE")

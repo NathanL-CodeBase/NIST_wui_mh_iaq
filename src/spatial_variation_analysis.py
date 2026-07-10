@@ -91,6 +91,17 @@ Author: Nathan Lima
 Institution: National Institute of Standards and Technology (NIST)
 Date: 2025
 Last Modified: 2025-12-23 (Migrated to use centralized utility modules)
+Update log:
+    2026-07-10 (N. Lima): Added Section 3.3 count-independent spatial metrics.
+        Joins the AeroTrak suppressed-regime flag from
+        coincidence_analysis/aerotrak_coincidence_per_burn.csv (Edit 1); adds a
+        reliable-regime restricted ratio R_sub over steps where both units read
+        PM below 500 ug/m^3 (Edit 2); adds a signed inter-room smoke arrival lag
+        at 100 and 50 ug/m^3 computed in a separate pass over every burn where
+        both AeroTraks ran, independent of CR Box use (Edit 3); and cross-checks
+        R_sub on the MODULAIR PM2.5 series (Edit 4). The MODULAIR R_sub carries a
+        QA/QC-bound caveat: it is only meaningful where both MODULAIR units
+        operated below their Section 3.2.3 bound.
 """
 
 import os
@@ -114,7 +125,11 @@ from src.data_paths import get_data_root, get_common_file, get_instrument_path
 # Import utility functions from centralized modules
 from scripts.datetime_utils import create_naive_datetime, TIME_SHIFTS
 from scripts.data_filters import g_mean
-from scripts.spatial_analysis_utils import calculate_peak_ratio
+from scripts.spatial_analysis_utils import (
+    calculate_peak_ratio,
+    calculate_subthreshold_ratio,
+    calculate_arrival_lag,
+)
 from scripts.data_loaders import load_burn_log
 from scripts.instrument_config import (
     get_instrument_datetime_column,
@@ -136,6 +151,18 @@ OUTPUT_PATH = str(data_root / "burn_data")
 # Load burn log (using portable path)
 burn_log_path = get_common_file('burn_log')
 burn_log = load_burn_log(burn_log_path)
+
+# Section 3.3 thresholds (see Section 3.1 / 3.2.2 of the WUI smoke paper):
+#   RELIABLE_REGIME_UG_M3 - co-located instruments agree within a factor of two
+#     below this level, so R_sub is trustworthy only over both-below steps.
+#   SUPPRESSED_PM3_UG_M3   - peak PM3 mass above which AeroTrak Ch1/Ch2 counts
+#     roll over (unreliable peaks).
+#   CEILING_FRAC_FLAG      - a unit within 10 % of the Poisson rollover ceiling.
+RELIABLE_REGIME_UG_M3 = 500.0
+SUPPRESSED_PM3_UG_M3 = 901.0
+CEILING_FRAC_FLAG = 0.9
+# Arrival-lag crossing thresholds (primary, sensitivity)
+ARRIVAL_THRESHOLDS_UG_M3 = (100.0, 50.0)
 
 print(f"[OK] Data root: {data_root}")
 print(f"[OK] Output path: {OUTPUT_PATH}")
@@ -583,6 +610,74 @@ def load_peak_concentrations():
         return None
 
 
+def load_coincidence_flags():
+    """Load the AeroTrak suppressed-regime flags for the Section 3.3 join.
+
+    Reads coincidence_analysis/aerotrak_coincidence_per_burn.csv (written by
+    src/aerotrak_coincidence.py) and returns a per-burn table with the ceiling
+    fraction and peak PM3 mass for each unit, plus the derived boolean flag.
+
+    Returns
+    -------
+    pd.DataFrame or None
+        Columns: Burn_ID, peak_frac_ceiling_bed2, peak_frac_ceiling_morningroom,
+        peak_total_pm3_bed2, peak_total_pm3_morningroom, bedroom_door_closed,
+        peak_in_suppressed_regime. Returns None if the CSV is absent so the main
+        run continues with NaN flag columns rather than failing.
+    """
+    csv_path = get_common_file("coincidence_analysis") / "aerotrak_coincidence_per_burn.csv"
+
+    if not os.path.exists(csv_path):
+        print(f"[WARNING] Coincidence flag CSV not found: {csv_path}")
+        print("          Suppressed-regime columns will be NaN.")
+        return None
+
+    coinc = pd.read_csv(csv_path)
+
+    # AeroTrak1 sits in Bedroom 2, AeroTrak2 in the Morning Room.
+    bed = coinc[coinc["location"] == "bedroom2"].set_index("burn")
+    morn = coinc[coinc["location"] == "morning_room"].set_index("burn")
+
+    burns = sorted(set(bed.index) | set(morn.index))
+    rows = []
+    for burn in burns:
+        frac_bed = bed["n_peak_frac_of_ceiling"].get(burn, np.nan)
+        frac_morn = morn["n_peak_frac_of_ceiling"].get(burn, np.nan)
+        pm3_bed = bed["peak_total_PM3_mass_ug_m3"].get(burn, np.nan)
+        pm3_morn = morn["peak_total_PM3_mass_ug_m3"].get(burn, np.nan)
+
+        # bedroom_sealed marks burns with the bedroom door closed (burns 5, 6).
+        door_closed = bool(
+            bed["bedroom_sealed"].get(burn, False)
+            or morn["bedroom_sealed"].get(burn, False)
+        )
+
+        # Suppressed if either unit peaks within 10 % of the rollover ceiling or
+        # above the 901 ug/m^3 PM3 mass bound.
+        suppressed = False
+        for frac, pm3 in ((frac_bed, pm3_bed), (frac_morn, pm3_morn)):
+            if pd.notna(frac) and frac >= CEILING_FRAC_FLAG:
+                suppressed = True
+            if pd.notna(pm3) and pm3 > SUPPRESSED_PM3_UG_M3:
+                suppressed = True
+
+        rows.append(
+            {
+                "Burn_ID": burn,
+                "peak_frac_ceiling_bed2": frac_bed,
+                "peak_frac_ceiling_morningroom": frac_morn,
+                "peak_total_pm3_bed2": pm3_bed,
+                "peak_total_pm3_morningroom": pm3_morn,
+                "bedroom_door_closed": door_closed,
+                "peak_in_suppressed_regime": suppressed,
+            }
+        )
+
+    flags = pd.DataFrame(rows)
+    print(f"Coincidence flags loaded: {flags.shape[0]} burns")
+    return flags
+
+
 # ============================================================================
 # RATIO CALCULATION FUNCTIONS
 # ============================================================================
@@ -957,6 +1052,24 @@ def analyze_spatial_variation():
                         "Date and Time",
                     )
 
+                    # Reliable-regime restricted ratio (Edit 2): median Bed2/MR
+                    # over steps where both units read below 500 ug/m^3.
+                    burn_date_ai = burn_info["Date"].iloc[0]
+                    (
+                        r_sub_med,
+                        r_sub_lo,
+                        r_sub_hi,
+                        n_sub,
+                    ) = calculate_subthreshold_ratio(
+                        aerotrakb_data,
+                        aerotrakk_data,
+                        burn_date_ai,
+                        pm_size,
+                        "Date and Time",
+                        "Date and Time",
+                        threshold=RELIABLE_REGIME_UG_M3,
+                    )
+
                     # Store results if we have at least one metric
                     if (
                         peak_ratio is not None
@@ -971,6 +1084,10 @@ def analyze_spatial_variation():
                                 "CRBox_Activation_Ratio": crbox_ratio,
                                 "Average_Ratio": avg_ratio,
                                 "RSD_%": rsd,
+                                "R_sub_median": r_sub_med,
+                                "R_sub_iqr_low": r_sub_lo,
+                                "R_sub_iqr_high": r_sub_hi,
+                                "n_sub_steps": n_sub,
                             }
                         )
 
@@ -1026,6 +1143,26 @@ def analyze_spatial_variation():
                         "timestamp_local",
                     )
 
+                    # MODULAIR reliable-regime ratio (Edit 4). Cross-check of the
+                    # AeroTrak R_sub using MODULAIR PM2.5. QA/QC caveat: only
+                    # meaningful where both MODULAIR units operated below their
+                    # Section 3.2.3 bound; interpret with that in mind.
+                    burn_date_qa = burn_info["Date"].iloc[0]
+                    (
+                        r_sub_med,
+                        r_sub_lo,
+                        r_sub_hi,
+                        n_sub,
+                    ) = calculate_subthreshold_ratio(
+                        quantaqb_data,
+                        quantaqk_data,
+                        burn_date_qa,
+                        pm_size,
+                        "timestamp_local",
+                        "timestamp_local",
+                        threshold=RELIABLE_REGIME_UG_M3,
+                    )
+
                     # Store results if we have at least one metric
                     if (
                         peak_ratio is not None
@@ -1040,6 +1177,10 @@ def analyze_spatial_variation():
                                 "CRBox_Activation_Ratio": crbox_ratio,
                                 "Average_Ratio": avg_ratio,
                                 "RSD_%": rsd,
+                                "R_sub_median": r_sub_med,
+                                "R_sub_iqr_low": r_sub_lo,
+                                "R_sub_iqr_high": r_sub_hi,
+                                "n_sub_steps": n_sub,
                             }
                         )
 
@@ -1066,6 +1207,107 @@ def analyze_spatial_variation():
     # Create DataFrames from results
     aerotrak_df = pd.DataFrame(results["AeroTrak"])
     quantaq_df = pd.DataFrame(results["QuantAQ"])
+
+    # ------------------------------------------------------------------
+    # Edit 3: inter-room smoke arrival lag (separate pass over ALL burns)
+    # ------------------------------------------------------------------
+    # Arrival lag is count-independent and meaningful for burns the main loop
+    # skips (no CR Box). Compute it once per burn on the AeroTrak PM3 series for
+    # every burn where both units have data, independent of CR Box use.
+    print(f"\n{'='*60}")
+    print("ARRIVAL LAG (AeroTrak PM3, all burns with both units)")
+    print(f"{'='*60}")
+
+    lag_rows = []
+    if aerotrakb_data is not None and aerotrakk_data is not None:
+        for burn_id in burn_log["Burn ID"]:
+            burn_info = burn_log[burn_log["Burn ID"] == burn_id]
+            burn_date = burn_info["Date"].iloc[0]
+
+            lag_100 = calculate_arrival_lag(
+                aerotrakb_data,
+                aerotrakk_data,
+                burn_date,
+                "PM3 (µg/m³)",
+                "Date and Time",
+                "Date and Time",
+                threshold=ARRIVAL_THRESHOLDS_UG_M3[0],
+            )
+            lag_50 = calculate_arrival_lag(
+                aerotrakb_data,
+                aerotrakk_data,
+                burn_date,
+                "PM3 (µg/m³)",
+                "Date and Time",
+                "Date and Time",
+                threshold=ARRIVAL_THRESHOLDS_UG_M3[1],
+            )
+
+            lag_rows.append(
+                {
+                    "Burn_ID": burn_id,
+                    "arrival_lag_min_100": lag_100,
+                    "arrival_lag_min_50": lag_50,
+                }
+            )
+            lag100_str = f"{lag_100:+.1f}" if pd.notna(lag_100) else "N/A"
+            lag50_str = f"{lag_50:+.1f}" if pd.notna(lag_50) else "N/A"
+            print(
+                f"  {burn_id}: lag@100={lag100_str} min, lag@50={lag50_str} min "
+                f"(negative = Morning Room first)"
+            )
+
+    lag_df = pd.DataFrame(lag_rows)
+
+    # ------------------------------------------------------------------
+    # Edit 1: join the suppressed-regime flag (per burn)
+    # ------------------------------------------------------------------
+    coinc_flags = load_coincidence_flags()
+
+    # Merge lag + flags into the AeroTrak sheet. Arrival lag and the suppressed
+    # flag are per-burn, so broadcast across that burn's PM-size rows. Burns that
+    # the main loop skipped (no CR Box) get one PM3 row carrying lag + flags with
+    # the ratio columns left NaN.
+    ratio_cols = [
+        "Peak_Ratio_Index",
+        "CRBox_Activation_Ratio",
+        "Average_Ratio",
+        "RSD_%",
+        "R_sub_median",
+        "R_sub_iqr_low",
+        "R_sub_iqr_high",
+        "n_sub_steps",
+    ]
+    if not lag_df.empty:
+        existing_burns = (
+            set(aerotrak_df["Burn_ID"]) if not aerotrak_df.empty else set()
+        )
+        missing_rows = []
+        for _, lr in lag_df.iterrows():
+            if lr["Burn_ID"] not in existing_burns:
+                row = {"Burn_ID": lr["Burn_ID"], "PM_Size": "PM3 (µg/m³)"}
+                for col in ratio_cols:
+                    row[col] = np.nan
+                missing_rows.append(row)
+        if missing_rows:
+            aerotrak_df = pd.concat(
+                [aerotrak_df, pd.DataFrame(missing_rows)], ignore_index=True
+            )
+
+        aerotrak_df = aerotrak_df.merge(lag_df, on="Burn_ID", how="left")
+
+    if coinc_flags is not None and not aerotrak_df.empty:
+        aerotrak_df = aerotrak_df.merge(coinc_flags, on="Burn_ID", how="left")
+    elif not aerotrak_df.empty:
+        for col in [
+            "peak_frac_ceiling_bed2",
+            "peak_frac_ceiling_morningroom",
+            "peak_total_pm3_bed2",
+            "peak_total_pm3_morningroom",
+            "bedroom_door_closed",
+            "peak_in_suppressed_regime",
+        ]:
+            aerotrak_df[col] = np.nan
 
     # Save to Excel file
     output_file = os.path.join(OUTPUT_PATH, "spatial_variation_analysis.xlsx")
@@ -1162,6 +1404,63 @@ def analyze_spatial_variation():
             if not pd.isna(rsd_mean)
             else "  Mean RSD: N/A"
         )
+
+    # ------------------------------------------------------------------
+    # Section 3.3 text inputs: arrival lag, R_sub, Burn 03 suppressed flag
+    # ------------------------------------------------------------------
+    print(f"\n{'='*60}")
+    print("SECTION 3.3 TEXT INPUTS")
+    print(f"{'='*60}")
+
+    if not aerotrak_df.empty and "arrival_lag_min_100" in aerotrak_df.columns:
+        # One value per burn; collapse to per-burn before summarizing.
+        per_burn = aerotrak_df.drop_duplicates(subset="Burn_ID")
+
+        lag100 = per_burn["arrival_lag_min_100"].dropna()
+        if not lag100.empty:
+            print(
+                f"\nArrival lag @100 ug/m^3 (t_MorningRoom - t_Bed2, "
+                f"negative = Morning Room first):"
+            )
+            print(
+                f"  median={lag100.median():+.1f} min, "
+                f"range {lag100.min():+.1f} to {lag100.max():+.1f} min, "
+                f"N={len(lag100)} burns"
+            )
+            if "bedroom_door_closed" in per_burn.columns:
+                closed = per_burn[per_burn["bedroom_door_closed"] == True]
+                for _, row in closed.iterrows():
+                    l100 = row["arrival_lag_min_100"]
+                    l50 = row["arrival_lag_min_50"]
+                    l100_s = f"{l100:+.1f} min" if pd.notna(l100) else "no crossing"
+                    l50_s = f"{l50:+.1f} min" if pd.notna(l50) else "no crossing"
+                    print(
+                        f"  [door closed] {row['Burn_ID']}: "
+                        f"lag@100={l100_s}, lag@50={l50_s} "
+                        f"(no crossing = Bedroom 2 PM3 stayed below threshold)"
+                    )
+
+        # PM3 R_sub across burns
+        pm3 = aerotrak_df[aerotrak_df["PM_Size"] == "PM3 (µg/m³)"]
+        r_sub = pm3["R_sub_median"].dropna() if "R_sub_median" in pm3.columns else pd.Series(dtype=float)
+        if not r_sub.empty:
+            print(f"\nR_sub_median (Bed2/MR, PM3, both < {RELIABLE_REGIME_UG_M3:.0f} ug/m^3):")
+            print(
+                f"  median across burns={r_sub.median():.3f}, "
+                f"range {r_sub.min():.3f} to {r_sub.max():.3f}, N={len(r_sub)} burns"
+            )
+
+        # Burn 03 suppressed-regime status
+        b3 = per_burn[per_burn["Burn_ID"] == "burn3"]
+        if not b3.empty and "peak_in_suppressed_regime" in b3.columns:
+            r = b3.iloc[0]
+            print("\nBurn 03 suppressed-regime status:")
+            print(f"  peak_in_suppressed_regime = {r.get('peak_in_suppressed_regime')}")
+            print(
+                f"  n_peak_frac_of_ceiling: Bed2="
+                f"{r.get('peak_frac_ceiling_bed2')}, "
+                f"MorningRoom={r.get('peak_frac_ceiling_morningroom')}"
+            )
 
     return aerotrak_df, quantaq_df
 

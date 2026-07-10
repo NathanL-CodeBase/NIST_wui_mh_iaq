@@ -8,9 +8,19 @@ Functions:
     - calculate_peak_ratio: Calculate ratio of peak concentrations between locations
     - calculate_event_time_ratio: Calculate concentration ratio at specific event time
     - calculate_average_ratio_and_rsd: Calculate time-averaged ratio and RSD
+    - calculate_subthreshold_ratio: Median ratio over steps where both units are
+      below a reliable-regime concentration threshold
+    - calculate_arrival_lag: Signed inter-room lag between threshold crossings
 
 Author: Nathan Lima
 Date: 2024-2025
+Update log:
+    2026-07-10 (N. Lima): Added calculate_subthreshold_ratio and
+        calculate_arrival_lag for the Section 3.3 count-independent spatial
+        metrics. These support the AeroTrak inter-room comparison when peak
+        counts sit in the Poisson-suppression regime documented in Section
+        3.2.2 (rollover ceiling near 760 particles/cm^3, PM3 mass unreliable
+        above ~901 ug/m^3).
 """
 
 import pandas as pd
@@ -512,3 +522,192 @@ def calculate_crbox_activation_ratio(
         time_window_minutes=5,
         burn_date=burn_date_only,
     )
+
+
+def calculate_subthreshold_ratio(
+    data_bed,
+    data_morning,
+    burn_date,
+    pm_size,
+    datetime_col_b,
+    datetime_col_m,
+    threshold=500.0,
+    outlier_threshold=(0.1, 10),
+    resample_freq="1T",
+):
+    """
+    Median Bedroom 2 / Morning Room ratio in the reliable concentration regime.
+
+    Restricts the comparison to time steps where *both* units report a
+    concentration below ``threshold``. Section 3.1 shows co-located instruments
+    agree within a factor of two below 500 ug/m^3, so a ratio computed only over
+    those steps is independent of the count-suppression regime that inflates the
+    peak ratio above ~901 ug/m^3 (Section 3.2.2). A median near 1 means the large
+    peak gap is mostly saturation; a median well above or below 1 means real
+    inter-room heterogeneity persists in the reliable regime.
+
+    Parameters
+    ----------
+    data_bed : pd.DataFrame
+        Bedroom 2 time-series data (numerator location).
+    data_morning : pd.DataFrame
+        Morning Room time-series data (denominator location).
+    burn_date : datetime-like
+        Burn day used to select rows via the ``Date`` column present on both
+        frames.
+    pm_size : str
+        PM size column name (e.g. ``'PM3 (ug/m3)'``).
+    datetime_col_b : str
+        Datetime column name for the bedroom frame.
+    datetime_col_m : str
+        Datetime column name for the morning room frame.
+    threshold : float, optional
+        Upper concentration bound (ug/m^3) both units must satisfy for a step to
+        count (default 500.0, the Section 3.1 agreement level).
+    outlier_threshold : tuple of (float, float), optional
+        (lower, upper) bounds for valid ratios (default (0.1, 10)), matching the
+        outlier rule used by ``calculate_average_ratio_and_rsd``.
+    resample_freq : str, optional
+        Resampling frequency for time alignment (default ``'1T'`` = 1 minute).
+
+    Returns
+    -------
+    tuple of (float, float, float, int)
+        ``(median, iqr_low, iqr_high, n_matched_steps)`` where the IQR bounds are
+        the 25th and 75th percentiles of the retained ratios. Returns
+        ``(nan, nan, nan, 0)`` if no step satisfies the mask or the PM column is
+        absent.
+    """
+    burn_date_only = pd.to_datetime(burn_date).date()
+
+    bed_burn = data_bed[data_bed["Date"] == burn_date_only].copy()
+    morning_burn = data_morning[data_morning["Date"] == burn_date_only].copy()
+
+    if bed_burn.empty or morning_burn.empty:
+        return np.nan, np.nan, np.nan, 0
+
+    if pm_size not in bed_burn.columns or pm_size not in morning_burn.columns:
+        return np.nan, np.nan, np.nan, 0
+
+    bed_burn[pm_size] = pd.to_numeric(bed_burn[pm_size], errors="coerce")
+    morning_burn[pm_size] = pd.to_numeric(morning_burn[pm_size], errors="coerce")
+
+    bed_burn = bed_burn.dropna(subset=[pm_size])
+    morning_burn = morning_burn.dropna(subset=[pm_size])
+
+    if bed_burn.empty or morning_burn.empty:
+        return np.nan, np.nan, np.nan, 0
+
+    # Align to a common 1-min timebase, same idiom as calculate_average_ratio_and_rsd
+    bed_resample = (
+        bed_burn[[datetime_col_b, pm_size]]
+        .set_index(datetime_col_b)[pm_size]
+        .resample(resample_freq)
+        .mean()
+    )
+    morning_resample = (
+        morning_burn[[datetime_col_m, pm_size]]
+        .set_index(datetime_col_m)[pm_size]
+        .resample(resample_freq)
+        .mean()
+    )
+
+    merged = pd.merge(
+        pd.DataFrame({"bed": bed_resample}),
+        pd.DataFrame({"morning": morning_resample}),
+        left_index=True,
+        right_index=True,
+        how="inner",
+    ).dropna()
+
+    # Reliable regime: both units below the agreement threshold and positive
+    mask = (
+        (merged["bed"] < threshold)
+        & (merged["morning"] < threshold)
+        & (merged["bed"] > 0)
+        & (merged["morning"] > 0)
+    )
+    merged = merged[mask]
+
+    if merged.empty:
+        return np.nan, np.nan, np.nan, 0
+
+    ratios = merged["bed"] / merged["morning"]
+
+    lower_bound, upper_bound = outlier_threshold
+    ratios = ratios[(ratios > lower_bound) & (ratios < upper_bound)]
+
+    if ratios.empty:
+        return np.nan, np.nan, np.nan, 0
+
+    median = float(ratios.median())
+    iqr_low = float(ratios.quantile(0.25))
+    iqr_high = float(ratios.quantile(0.75))
+    n_matched = int(len(ratios))
+
+    return median, iqr_low, iqr_high, n_matched
+
+
+def calculate_arrival_lag(
+    data_bed,
+    data_morning,
+    burn_date,
+    pm_size,
+    datetime_col_b,
+    datetime_col_m,
+    threshold,
+):
+    """
+    Signed inter-room lag between the two units crossing a fixed threshold.
+
+    Finds the first time each unit's concentration rises to or above
+    ``threshold`` on the burn day and returns the difference. Because it depends
+    only on when each series first reaches an absolute level, not on the peak
+    magnitude, this measure is valid even when the peak counts sit in the
+    Poisson-suppression regime (Section 3.2.2). It is the primary
+    count-independent evidence for room-to-room smoke transport.
+
+    Parameters
+    ----------
+    data_bed : pd.DataFrame
+        Bedroom 2 time-series data.
+    data_morning : pd.DataFrame
+        Morning Room time-series data.
+    burn_date : datetime-like
+        Burn day used to select rows via the ``Date`` column.
+    pm_size : str
+        PM size column name (e.g. ``'PM3 (ug/m3)'``).
+    datetime_col_b : str
+        Datetime column name for the bedroom frame.
+    datetime_col_m : str
+        Datetime column name for the morning room frame.
+    threshold : float
+        Absolute concentration (ug/m^3) whose first crossing defines arrival.
+
+    Returns
+    -------
+    float
+        ``t_cross(morning) - t_cross(bedroom)`` in minutes. Negative means the
+        Morning Room crossed first (smoke arrived there earlier). NaN if either
+        unit never crosses the threshold on the burn day.
+    """
+    burn_date_only = pd.to_datetime(burn_date).date()
+
+    def _first_cross(data, dt_col):
+        sub = data[data["Date"] == burn_date_only].copy()
+        if sub.empty or pm_size not in sub.columns:
+            return pd.NaT
+        sub[pm_size] = pd.to_numeric(sub[pm_size], errors="coerce")
+        sub = sub.dropna(subset=[pm_size, dt_col]).sort_values(dt_col)
+        crossed = sub[sub[pm_size] >= threshold]
+        if crossed.empty:
+            return pd.NaT
+        return crossed[dt_col].iloc[0]
+
+    t_bed = _first_cross(data_bed, datetime_col_b)
+    t_morning = _first_cross(data_morning, datetime_col_m)
+
+    if pd.isna(t_bed) or pd.isna(t_morning):
+        return np.nan
+
+    return (pd.Timestamp(t_morning) - pd.Timestamp(t_bed)).total_seconds() / 60.0

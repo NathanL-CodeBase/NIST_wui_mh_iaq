@@ -19,6 +19,10 @@ import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 
+# Make src/ importable so the pre/post-PAC helpers can reach data_paths and
+# fig_style regardless of the caller's working directory.
+sys.path.insert(0, str(Path(__file__).parent))
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Paths
 # ──────────────────────────────────────────────────────────────────────────────
@@ -201,6 +205,348 @@ def compute_gmd_gsd(diameters, dndlogdp):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Pre/post-PAC averaged spectra (Section 3.4)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Burn date -> SMPS file suffix (Bedroom 2 is the only SMPS location).
+_BURN_SUFFIX = {
+    "2024-04-26": "04262024",
+    "2024-05-02": "05022024",
+    "2024-05-06": "05062024",
+    "2024-05-09": "05092024",
+    "2024-05-13": "05132024",
+    "2024-05-17": "05172024",
+    "2024-05-20": "05202024",
+    "2024-05-23": "05232024",
+    "2024-05-28": "05282024",
+    "2024-05-31": "05312024",
+}
+
+# Coarse band edges (nm) shared with the decay analysis and Section 3.2.2.
+_BAND_EDGES_NM = [9, 100, 200, 300, 437]
+
+
+def parse_wui_xlsx_timed(filepath):
+    """Parse a WUI SMPS xlsx export, returning per-scan timestamps as well.
+
+    Same source as :func:`parse_wui_xlsx` but keeps the scan datetime so callers
+    can average dN/dlogDp over explicit time windows (e.g. pre/post air-cleaner).
+
+    Parameters
+    ----------
+    filepath : Path
+
+    Returns
+    -------
+    diameters : ndarray, shape (n_bins,)
+        Diameter midpoints, nm.
+    data : DataFrame, shape (n_scans, n_bins)
+        dN/dlogDp per scan; columns are float diameter midpoints.
+    total_conc : ndarray, shape (n_scans,)
+        Total number concentration (#/cm³) per scan.
+    times : Series of Timestamp, shape (n_scans,)
+        Scan start datetime (Date + Start Time).
+    """
+    df = pd.read_excel(filepath, sheet_name="all_data", header=0)
+    df.columns = [c.strip() if isinstance(c, str) else c for c in df.columns]
+
+    total_col = next(
+        c for c in df.columns if isinstance(c, str) and "Total" in c and "Conc" in c
+    )
+    total_conc = pd.to_numeric(df[total_col], errors="coerce").fillna(0.0).values
+
+    bin_cols = [c for c in df.columns if not isinstance(c, str) and float(c) > 0]
+    diameters = np.array([float(c) for c in bin_cols])
+    data = df[bin_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+
+    # The "Date" cell can carry a spurious 00:00:00 time component; take only
+    # the date part before combining with the scan Start Time.
+    date_part = df["Date"].astype(str).str.split(" ").str[0]
+    times = pd.to_datetime(
+        date_part + " " + df["Start Time"].astype(str), errors="coerce"
+    )
+
+    return diameters, data, total_conc, times
+
+
+def _burn_event_times(burn_date, burn_log):
+    """Return (garage_closed, pac_on) Timestamps for a burn from the burn log.
+
+    Parameters
+    ----------
+    burn_date : str
+        'YYYY-MM-DD'.
+    burn_log : DataFrame
+        Burn log sheet with 'Date', 'garage closed', 'CR Box on' columns.
+
+    Returns
+    -------
+    tuple of (Timestamp, Timestamp or None)
+        Garage-closed datetime and CR Box (PAC) on datetime. PAC is None if the
+        burn had no air cleaner (e.g. the baseline burns).
+    """
+    d = pd.to_datetime(burn_date).date()
+    row = burn_log[pd.to_datetime(burn_log["Date"]).dt.date == d]
+    if row.empty:
+        raise ValueError(f"No burn-log row for {burn_date}")
+    row = row.iloc[0]
+
+    garage = pd.Timestamp.combine(d, pd.to_datetime(str(row["garage closed"])).time())
+    pac_raw = row["CR Box on"]
+    pac = (
+        None
+        if pd.isna(pac_raw)
+        else pd.Timestamp.combine(d, pd.to_datetime(str(pac_raw)).time())
+    )
+    return garage, pac
+
+
+def _decay_fit_window(burn_date, burn_log, band="Total Concentration (µg/m³)"):
+    """Return the post-PAC decay-fit window (start, end) as Timestamps.
+
+    Reads the decay start/end offsets (hours since garage close) that the CADR
+    script already fit, so the post-PAC spectrum uses the same interval as the
+    reported decay rates. No refitting.
+
+    Parameters
+    ----------
+    burn_date : str
+        'YYYY-MM-DD'.
+    burn_log : DataFrame
+    band : str
+        Which decay row to read the window from; the total-concentration row
+        gives the common decay interval used across bands.
+
+    Returns
+    -------
+    tuple of (Timestamp, Timestamp)
+    """
+    from data_paths import get_common_file
+
+    xlsx = get_common_file("burn_calcs") / "SMPS_decay_and_CADR.xlsx"
+    if not xlsx.exists():
+        sys.exit(
+            f"Not found: {xlsx}\n"
+            "Run clean_air_delivery_rates_pmsizes.py with dataset='SMPS' first."
+        )
+    decay = pd.read_excel(xlsx)
+
+    burn_num = _BURN_SUFFIX  # noqa: F841  (kept for clarity of mapping origin)
+    # Burn id in the decay file is 'burnN'; derive N from the ordered suffix map.
+    burn_id = f"burn{list(_BURN_SUFFIX).index(burn_date) + 1}"
+    rows = decay[(decay["burn"] == burn_id) & (decay["pollutant"] == band)]
+    if rows.empty:
+        raise ValueError(f"No decay window for {burn_id} / {band} in {xlsx.name}")
+    r = rows.iloc[0]
+
+    garage, _ = _burn_event_times(burn_date, burn_log)
+    start = garage + pd.Timedelta(hours=float(r["decay_start_time"]))
+    end = garage + pd.Timedelta(hours=float(r["decay_end_time"]))
+    return start, end
+
+
+def _average_spectrum(data, times, t0, t1):
+    """Average dN/dlogDp over scans whose start time is in [t0, t1].
+
+    Parameters
+    ----------
+    data : DataFrame, shape (n_scans, n_bins)
+    times : Series of Timestamp
+    t0, t1 : Timestamp
+
+    Returns
+    -------
+    mean_spectrum : ndarray, shape (n_bins,)
+    n_scans : int
+    """
+    mask = (times >= t0) & (times <= t1)
+    n = int(mask.sum())
+    if n == 0:
+        raise ValueError(f"No SMPS scans in window {t0} to {t1}")
+    return data[mask.values].mean(axis=0).values.astype(float), n
+
+
+def plot_pre_post_pac_spectra(burn_date="2024-05-31", data_type="numConc"):
+    """Averaged pre- and post-PAC dN/dlogDp spectra for a burn (Bedroom 2).
+
+    Pre-PAC window: garage close to PAC (CR Box) activation, characterizing the
+    smoke that infiltrated the home. Post-PAC window: the decay-fit interval the
+    CADR script used, showing the size-dependent removal by filtration.
+
+    Two-panel figure: (1) absolute averaged dN/dlogDp (the concentration drop),
+    (2) peak-normalized overlay (the shape change). GMD and GSD are annotated per
+    period; the four coarse band edges (9, 100, 200, 300, 437 nm) are drawn as
+    light vertical guides so the spectra connect to the decay bands.
+
+    Parameters
+    ----------
+    burn_date : str
+        'YYYY-MM-DD'. Default '2024-05-31' (Burn 10).
+    data_type : str
+        SMPS product suffix, 'numConc' (number) is the default.
+
+    Returns
+    -------
+    dict
+        Summary numbers for the Section 3.4 text (GMD/GSD pre and post, mode
+        diameter, window scan counts, and the fractional removal per band).
+    """
+    import matplotlib as mpl
+
+    from fig_style import OKABE_ITO, apply_est_style, figsize
+
+    if burn_date not in _BURN_SUFFIX:
+        raise ValueError(f"Unknown burn date {burn_date}; add it to _BURN_SUFFIX.")
+
+    burn_log = pd.read_excel(cfg["common_folders"]["burn_log"], sheet_name="Sheet2")
+    garage, pac = _burn_event_times(burn_date, burn_log)
+    if pac is None:
+        sys.exit(f"Burn {burn_date} has no CR Box; a pre/post-PAC split is undefined.")
+
+    suffix = _BURN_SUFFIX[burn_date]
+    fpath = smps_dir / f"MH_apollo_bed_{suffix}_{data_type}.xlsx"
+    if not fpath.exists():
+        sys.exit(f"File not found: {fpath}")
+
+    diameters, data, total_conc, times = parse_wui_xlsx_timed(fpath)
+
+    # Data-quality gate: the burn must have scans on both sides of PAC with no
+    # long gap across the activation instant.
+    day_mask = times.dt.date == pd.to_datetime(burn_date).date()
+    data = data[day_mask.values].reset_index(drop=True)
+    times = times[day_mask.values].reset_index(drop=True)
+    total_conc = np.asarray(total_conc)[day_mask.values]
+    order = np.argsort(times.values)
+    data = data.iloc[order].reset_index(drop=True)
+    times = times.iloc[order].reset_index(drop=True)
+    total_conc = total_conc[order]
+
+    peak_idx = int(np.argmax(total_conc))
+    print(f"Burn {burn_date} SMPS Bedroom 2 ({data_type})")
+    print(f"  Number peak     : {total_conc[peak_idx]:.0f} #/cm³ at {times[peak_idx]}")
+    print(f"  Garage closed   : {garage}")
+    print(f"  PAC (CR Box) on : {pac}")
+
+    around = times[(times >= garage) & (times <= pac + pd.Timedelta(minutes=30))]
+    max_gap_s = around.diff().dt.total_seconds().max()
+    print(f"  Max scan gap across PAC window: {max_gap_s:.0f} s")
+    if max_gap_s > 600:  # a >10 min hole would corrupt a window average
+        sys.exit(
+            f"Data-quality stop: {max_gap_s:.0f} s gap across the PAC window for "
+            f"{burn_date}. Inspect the record before plotting."
+        )
+
+    pre_spec, n_pre = _average_spectrum(data, times, garage, pac)
+    post_start, post_end = _decay_fit_window(burn_date, burn_log)
+    post_spec, n_post = _average_spectrum(data, times, post_start, post_end)
+    print(f"  Pre-PAC window  : {garage} to {pac}  ({n_pre} scans)")
+    print(f"  Post-PAC window : {post_start} to {post_end}  ({n_post} scans)")
+
+    gmd_pre, gsd_pre = compute_gmd_gsd(diameters, pre_spec)
+    gmd_post, gsd_post = compute_gmd_gsd(diameters, post_spec)
+    mode_pre = float(diameters[int(np.argmax(pre_spec))])
+    mode_post = float(diameters[int(np.argmax(post_spec))])
+    print(f"  Pre  GMD={gmd_pre:.1f} nm  GSD={gsd_pre:.2f}  mode={mode_pre:.1f} nm")
+    print(f"  Post GMD={gmd_post:.1f} nm  GSD={gsd_post:.2f}  mode={mode_post:.1f} nm")
+
+    # Fractional removal per coarse band (1 - post/pre of the band integral).
+    removal = {}
+    for lo, hi in zip(_BAND_EDGES_NM[:-1], _BAND_EDGES_NM[1:]):
+        bmask = (diameters >= lo) & (diameters < hi)
+        pre_sum = pre_spec[bmask].sum()
+        post_sum = post_spec[bmask].sum()
+        frac = 1.0 - post_sum / pre_sum if pre_sum > 0 else np.nan
+        removal[f"{lo}-{hi} nm"] = frac
+    print("  Fractional removal (1 - post/pre) by band:")
+    for band, frac in removal.items():
+        print(f"    {band:>10}: {frac * 100:.1f} %")
+    best_band = max(removal, key=lambda k: removal[k])
+    print(f"  Largest fractional removal: {best_band} ({removal[best_band] * 100:.1f} %)")
+
+    # ── Figure ────────────────────────────────────────────────────────────────
+    apply_est_style()
+    c_pre = OKABE_ITO["vermillion"]
+    c_post = OKABE_ITO["blue"]
+
+    w, h = figsize("double", aspect=0.42)
+    fig, (ax_abs, ax_norm) = plt.subplots(1, 2, figsize=(w, h))
+
+    def _band_guides(ax):
+        for edge in _BAND_EDGES_NM:
+            ax.axvline(edge, color="0.75", linewidth=0.6, linestyle=":", zorder=0)
+
+    # Panel 1: absolute averaged spectra.
+    _band_guides(ax_abs)
+    ax_abs.plot(diameters, pre_spec, color=c_pre, linewidth=1.8, label="Pre-PAC")
+    ax_abs.plot(
+        diameters, post_spec, color=c_post, linewidth=1.8, linestyle="--",
+        label="Post-PAC",
+    )
+    ax_abs.set_xscale("log")
+    ax_abs.set_xlim(9, 437)
+    ax_abs.set_xlabel("Particle diameter (nm)")
+    ax_abs.set_ylabel(r"d$N$/d$\log D_\mathrm{p}$ (#/cm³)")
+    ax_abs.set_title("(a) Averaged spectra")
+    ax_abs.legend(frameon=True, framealpha=0.9, edgecolor="0.7", loc="upper right")
+    ax_abs.text(
+        0.03, 0.97,
+        f"Pre: GMD {gmd_pre:.0f} nm, GSD {gsd_pre:.2f}\n"
+        f"Post: GMD {gmd_post:.0f} nm, GSD {gsd_post:.2f}",
+        transform=ax_abs.transAxes, va="top", ha="left", fontsize=10,
+        bbox=dict(boxstyle="round", facecolor="white", edgecolor="0.7", alpha=0.9),
+    )
+
+    # Panel 2: peak-normalized overlay (shape change).
+    _band_guides(ax_norm)
+    ax_norm.plot(
+        diameters, peak_normalize(pre_spec), color=c_pre, linewidth=1.8, label="Pre-PAC"
+    )
+    ax_norm.plot(
+        diameters, peak_normalize(post_spec), color=c_post, linewidth=1.8,
+        linestyle="--", label="Post-PAC",
+    )
+    ax_norm.set_xscale("log")
+    ax_norm.set_xlim(9, 437)
+    ax_norm.set_ylim(0, 1.08)
+    ax_norm.set_xlabel("Particle diameter (nm)")
+    ax_norm.set_ylabel(r"Normalized d$N$/d$\log D_\mathrm{p}$ (–)")
+    ax_norm.set_title("(b) Peak-normalized")
+    ax_norm.legend(frameon=True, framealpha=0.9, edgecolor="0.7", loc="upper right")
+
+    for ax in (ax_abs, ax_norm):
+        ticks = [10, 20, 50, 100, 200, 400]
+        ax.set_xticks(ticks)
+        ax.xaxis.set_major_formatter(ticker.FixedFormatter([str(t) for t in ticks]))
+        ax.xaxis.set_minor_formatter(ticker.NullFormatter())
+
+    burn_id = f"burn{list(_BURN_SUFFIX).index(burn_date) + 1}"
+    out_pdf = output_dir / f"smps_pre_post_pac_spectra_{burn_id}.pdf"
+    out_png = output_dir / f"smps_pre_post_pac_spectra_{burn_id}.png"
+    for out in (out_pdf, out_png):
+        if out.exists():
+            import datetime as _dt
+
+            out = out.with_name(f"{out.stem}_{_dt.date.today().isoformat()}{out.suffix}")
+        fig.savefig(out, dpi=300, bbox_inches="tight")
+        print(f"  Figure saved: {out}")
+    plt.close(fig)
+
+    return {
+        "burn_date": burn_date,
+        "gmd_pre_nm": gmd_pre,
+        "gsd_pre": gsd_pre,
+        "mode_pre_nm": mode_pre,
+        "gmd_post_nm": gmd_post,
+        "gsd_post": gsd_post,
+        "mode_post_nm": mode_post,
+        "n_pre_scans": n_pre,
+        "n_post_scans": n_post,
+        "fractional_removal": removal,
+        "largest_removal_band": best_band,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Load data and select peak scans
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -324,3 +670,12 @@ fig.savefig(out_pdf, dpi=300, bbox_inches="tight")
 fig.savefig(out_png, dpi=300, bbox_inches="tight")
 print(f"\nFigure saved: {out_pdf}")
 print(f"PNG preview:  {out_png}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Section 3.4 pre/post-PAC spectra (Burn 10 by default)
+# ──────────────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    print("\n" + "=" * 78)
+    plot_pre_post_pac_spectra(burn_date="2024-05-31")

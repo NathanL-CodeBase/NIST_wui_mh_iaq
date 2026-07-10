@@ -64,12 +64,16 @@ Date: 2024-2025
 
 # %%
 import os
+
+import matplotlib
+matplotlib.use("Agg")  # non-interactive backend so CLI PNG export is headless-safe
+
 import pandas as pd
 import numpy as np
 import datetime
 from bokeh.plotting import figure, show, save
 from bokeh.io import output_notebook, output_file, reset_output
-from bokeh.models import ColorBar, LinearColorMapper, Range1d, Label, Div
+from bokeh.models import ColorBar, LinearColorMapper, Range1d, Label, Div, Span, BoxAnnotation
 from bokeh.layouts import column
 from bokeh.palettes import Turbo256
 
@@ -80,12 +84,37 @@ from pathlib import Path
 script_dir = Path(__file__).parent
 repo_root = script_dir.parent
 sys.path.insert(0, str(repo_root))
+# Add src/ so fig_style can be imported without the src. prefix
+sys.path.insert(0, str(script_dir))
 
 from src.data_paths import get_data_root, get_instrument_path, get_common_file
 
 
-# Set output to display plots in the notebook
-output_notebook()
+# Set output to display plots in the notebook only when running under one.
+# In a plain script, output_notebook() and show() trigger an IPython display
+# hook that raises NotImplementedError, so guard both.
+def _in_notebook():
+    try:
+        from IPython import get_ipython
+
+        ip = get_ipython()
+        return ip is not None and ip.__class__.__name__ == "ZMQInteractiveShell"
+    except Exception:
+        return False
+
+
+_SHOW_INLINE = _in_notebook()
+
+if _SHOW_INLINE:
+    output_notebook()
+
+
+def _maybe_show(obj):
+    """Show a Bokeh object only in a notebook; no-op in a plain script."""
+    if _SHOW_INLINE:
+        show(obj)
+
+
 
 # Set the path for the dataset (only using OneDrive path as requested)
 data_root = get_data_root()  # Portable path - auto-configured
@@ -147,10 +176,10 @@ def prepare_data(file_path, date_str):
     Returns:
         tuple: (data_for_plot, time_hours, size_bins, min_size, max_size)
     """
-    print(f"Reading data from {file_path}")
 
     try:
         # Read the base Excel file
+        print(f"Reading data from {file_path}")
         df = pd.read_excel(file_path)
         print(f"Raw data shape: {df.shape}")
 
@@ -303,7 +332,7 @@ def prepare_data(file_path, date_str):
 
         if date_column is None or time_column is None:
             print("Could not find Date or Time columns in transposed data")
-            return None, None, None, None, None
+            return None, None, None, None, None, None
 
         # Convert to datetime - with a fix for the format warning
         try:
@@ -345,7 +374,7 @@ def prepare_data(file_path, date_str):
                     available_dates = sorted(df_t["datetime"].dt.date.unique())
                     print(f"Available dates in file: {available_dates}")
 
-                return None, None, None, None, None
+                return None, None, None, None, None, None
 
             # Sort by datetime
             df_t = df_t.sort_values("datetime").reset_index(drop=True)
@@ -386,27 +415,273 @@ def prepare_data(file_path, date_str):
 
             if non_nan_count == 0:
                 print("No valid data found in measurement columns")
-                return None, None, None, None, None
+                return None, None, None, None, None, None
+
+            # Per-scan geometric mean diameter (nm) from the size distribution.
+            # Bins are log-uniform (constant dlogDp), so the size-bin values act
+            # as dN weights and dlogDp cancels in the moment integral.
+            size_arr = np.asarray(size_bins, dtype=float)
+            gmd_trace = np.full(data_array.shape[1], np.nan)
+            for j in range(data_array.shape[1]):
+                col = data_array[:, j]
+                w = np.where(np.isnan(col), 0.0, col)
+                w = np.maximum(w, 0.0)
+                total = w.sum()
+                if total > 0:
+                    gmd_trace[j] = np.exp(np.dot(w / total, np.log(size_arr)))
 
             # Convert to log scale
             log_data = np.log10(np.where(data_array > 0, data_array, np.nan))
 
-            # Return the processed data, time hours, and size bins
-            return log_data, df_t["hours"].values, size_bins, min_size, max_size
+            # Return the processed data, time hours, size bins, and GMD trace
+            return log_data, df_t["hours"].values, size_bins, min_size, max_size, gmd_trace
 
         except Exception as e:
             print(f"Error creating datetime and processing data: {e}")
             import traceback
 
             traceback.print_exc()
-            return None, None, None, None, None
+            return None, None, None, None, None, None
 
     except Exception as e:
         print(f"Error processing file: {e}")
         import traceback
 
         traceback.print_exc()
-        return None, None, None, None, None
+        return None, None, None, None, None, None
+
+
+def get_burn_events(burn_date):
+    """Return event times (in hours of the day) for a burn from the burn log.
+
+    Reads ignition, garage-closed, and CR Box (PAC) activation times from the
+    burn log for the given date. Does not invent times: any event missing in
+    the log is returned as ``None``.
+
+    Parameters
+    ----------
+    burn_date : str
+        'YYYY-MM-DD'.
+
+    Returns
+    -------
+    dict
+        Keys 'ignition', 'garage_closed', 'cr_box_on' mapped to the event hour
+        of the day (float) or None if not recorded.
+    """
+    events = {"ignition": None, "garage_closed": None, "cr_box_on": None}
+    if burn_log is None:
+        return events
+
+    d = pd.to_datetime(burn_date).date()
+    row = burn_log[pd.to_datetime(burn_log["Date"]).dt.date == d]
+    if row.empty:
+        return events
+    row = row.iloc[0]
+
+    def _to_hours(val):
+        if pd.isna(val):
+            return None
+        t = pd.to_datetime(str(val)).time()
+        return t.hour + t.minute / 60.0 + t.second / 3600.0
+
+    events["ignition"] = _to_hours(row.get("Ignition"))
+    events["garage_closed"] = _to_hours(row.get("garage closed"))
+    events["cr_box_on"] = _to_hours(row.get("CR Box on"))
+    return events
+
+
+def get_decay_window_hours(burn_date, band="Total Concentration (µg/m³)"):
+    """Return the post-PAC decay-fit window (start, end) in hours of the day.
+
+    Reads the decay start/end offsets (hours since garage close) that
+    clean_air_delivery_rates_pmsizes.py already fit, so the shaded post-PAC
+    region matches the reported decay interval. No refitting here.
+
+    Parameters
+    ----------
+    burn_date : str
+        'YYYY-MM-DD'.
+    band : str
+        Which decay row to read the window from; the total-concentration row
+        gives the common interval used across bands.
+
+    Returns
+    -------
+    tuple of (float or None, float or None)
+        (start_hour, end_hour) as hours of the day, or (None, None) if the
+        decay file or a matching row is missing.
+    """
+    try:
+        xlsx = get_common_file("burn_calcs") / "SMPS_decay_and_CADR.xlsx"
+    except Exception:
+        return (None, None)
+    if not os.path.exists(xlsx):
+        return (None, None)
+
+    events = get_burn_events(burn_date)
+    gc = events.get("garage_closed")
+    if gc is None:
+        return (None, None)
+
+    try:
+        decay = pd.read_excel(xlsx)
+    except Exception:
+        return (None, None)
+
+    burn_id = f"burn{list(BURN_INFO).index(burn_date) + 1}"
+    rows = decay[(decay["burn"] == burn_id) & (decay["pollutant"] == band)]
+    if rows.empty:
+        return (None, None)
+    r = rows.iloc[0]
+    return (gc + float(r["decay_start_time"]), gc + float(r["decay_end_time"]))
+
+
+def _report_burn_quality(burn_date, description, data_type, time_hours, events):
+    """Print peak, PAC time, and gap checks; stop if a check fails.
+
+    Confirms the record spans the PAC window without a large gap and that the
+    PAC activation is recorded. Stops (raises) rather than silently substituting
+    another burn.
+    """
+    gc = events.get("garage_closed")
+    pac = events.get("cr_box_on")
+    print(f"  {description} ({data_type}) event times (hours of day): "
+          f"ignition={events.get('ignition')}, garage_closed={gc}, cr_box_on={pac}")
+
+    if pac is None:
+        print(f"  NOTE: no CR Box (PAC) time recorded for {burn_date}; "
+              "before/after shading limited to available events.")
+        return
+
+    th = np.asarray(time_hours, dtype=float)
+    around = np.sort(th[(th >= gc) & (th <= pac + 0.5)]) if gc is not None else np.array([])
+    if around.size >= 2:
+        max_gap_min = float(np.max(np.diff(around)) * 60.0)
+        print(f"  Max scan gap across PAC window: {max_gap_min:.0f} s -> "
+              f"{max_gap_min:.1f} min")
+        if max_gap_min > 10.0:
+            raise ValueError(
+                f"Data-quality stop for {burn_date}: {max_gap_min:.1f} min gap "
+                "across the PAC window. Inspect the record before plotting."
+            )
+    else:
+        print(f"  WARNING: fewer than 2 scans in the garage->PAC window for "
+              f"{burn_date}.")
+
+
+def save_est_png(data_for_plot, time_hours, size_bins, description, data_type,
+                 time_start, time_end, min_size, max_size, gmd_trace, events,
+                 decay_window):
+    """Render an ES&T Air publication PNG heatmap via src/fig_style.py.
+
+    Uses matplotlib pcolormesh so the number and mass heatmaps for the selected
+    burn match the Section 3.2 figure set (Okabe-Ito palette, column widths,
+    apply_est_style). The Bokeh HTML output is kept separately.
+    """
+    import datetime as _dt
+
+    import matplotlib
+    matplotlib.use("Agg")  # non-interactive backend for headless PNG export
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
+
+    from fig_style import OKABE_ITO, apply_est_style, figsize
+
+    apply_est_style()
+
+    data = np.asarray(data_for_plot, dtype=float)  # log10 values, shape (nbins, ntimes)
+    th = np.asarray(time_hours, dtype=float)
+    sb = np.asarray(size_bins, dtype=float)
+
+    # Restrict to the burn window (garage-close -1 h to decay-end +0.5 h) so the
+    # before/after contrast is legible instead of the full 24 h day.
+    gc = events.get("garage_closed") if events else None
+    d1 = decay_window[1] if decay_window else None
+    if gc is not None:
+        x_lo = gc - 1.0
+        x_hi = (d1 + 0.5) if d1 is not None else gc + 2.0
+        mask = (th >= x_lo) & (th <= x_hi)
+        if mask.sum() >= 2:
+            th = th[mask]
+            data = data[:, mask]
+    else:
+        x_lo, x_hi = time_start, time_end
+
+    label = ("Log$_{10}$(d$N$/dlog$D_p$) (#/cm³)" if data_type == "numConc"
+             else "Log$_{10}$(d$M$/dlog$D_p$) (µg/m³)")
+    title = (f"SMPS number size distribution, {description}"
+             if data_type == "numConc"
+             else f"SMPS mass size distribution, {description}")
+
+    w, h = figsize("double", aspect=0.5)
+    fig, ax = plt.subplots(figsize=(w, h))
+
+    # pcolormesh needs cell edges; build midpoint edges in time and log-size.
+    def _edges(vals):
+        vals = np.asarray(vals, dtype=float)
+        mids = (vals[:-1] + vals[1:]) / 2.0
+        first = vals[0] - (mids[0] - vals[0])
+        last = vals[-1] + (vals[-1] - mids[-1])
+        return np.concatenate([[first], mids, [last]])
+
+    t_edges = _edges(th)
+    s_edges = _edges(sb)
+    mesh = ax.pcolormesh(
+        t_edges, s_edges, np.ma.masked_invalid(data), cmap="turbo", shading="auto"
+    )
+    ax.set_yscale("log")
+    ax.set_ylim(min_size, max_size)
+    ax.set_xlabel("Hour of day")
+    ax.set_ylabel("Particle diameter (nm)")
+    ax.set_title(title)
+
+    cbar = fig.colorbar(mesh, ax=ax, pad=0.02)
+    cbar.set_label(label)
+
+    ax.set_yticks([10, 20, 50, 100, 200, 400])
+    ax.yaxis.set_major_formatter(mticker.FixedFormatter([str(t) for t in [10, 20, 50, 100, 200, 400]]))
+
+    # Pre-PAC (garage->PAC) and post-PAC (decay window) shading.
+    if events is not None:
+        pac = events.get("cr_box_on")
+        if gc is not None and pac is not None and pac > gc:
+            ax.axvspan(gc, pac, color="#999999", alpha=0.20, zorder=1)
+        if decay_window is not None:
+            d0, d1w = decay_window
+            if d0 is not None and d1w is not None and d1w > d0:
+                ax.axvspan(d0, d1w, color=OKABE_ITO["blue"], alpha=0.15, zorder=1)
+
+    # GMD overlay, aligned to the (possibly trimmed) time axis.
+    if gmd_trace is not None:
+        g_full = np.asarray(gmd_trace, dtype=float)
+        t_full = np.asarray(time_hours, dtype=float)
+        gm_mask = (t_full >= th[0]) & (t_full <= th[-1]) & np.isfinite(g_full)
+        if gm_mask.any():
+            ax.plot(t_full[gm_mask], g_full[gm_mask], color="black", linewidth=1.6,
+                    label="Geometric mean diameter")
+
+    # Event lines.
+    if events is not None:
+        for key, color, style, elabel in [
+            ("ignition", OKABE_ITO["orange"], ":", "Ignition"),
+            ("garage_closed", "black", "-", "Garage closed"),
+            ("cr_box_on", OKABE_ITO["vermillion"], "--", "CR Box on"),
+        ]:
+            hh = events.get(key)
+            if hh is not None and th[0] <= hh <= th[-1]:
+                ax.axvline(hh, color=color, linestyle=style, linewidth=1.4, label=elabel)
+
+    ax.legend(fontsize=9, loc="upper right", framealpha=0.85)
+
+    output_dir = get_common_file("output_figures")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out = output_dir / f"SMPS_{description}_{data_type}_heatmap.png"
+    if out.exists():
+        out = out.with_name(f"{out.stem}_{_dt.date.today().isoformat()}{out.suffix}")
+    fig.savefig(out, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  ES&T PNG saved: {out}")
 
 
 def create_heatmap(
@@ -421,6 +696,9 @@ def create_heatmap(
     time_end=24,
     min_size=None,
     max_size=None,
+    gmd_trace=None,
+    events=None,
+    decay_window=None,
 ):
     """
     Create a heatmap visualization for SMPS data
@@ -437,6 +715,12 @@ def create_heatmap(
         time_end (float, optional): End time for x-axis in hours (default: 24)
         min_size (float, optional): Minimum size for y-axis
         max_size (float, optional): Maximum size for y-axis
+        gmd_trace (numpy.ndarray, optional): Per-scan geometric mean diameter
+            (nm) to overlay on the heatmap.
+        events (dict, optional): Event hours ('ignition', 'garage_closed',
+            'cr_box_on') to mark with vertical Spans.
+        decay_window (tuple, optional): (start_hour, end_hour) of the post-PAC
+            decay-fit window to shade as the post-PAC period.
 
     Returns:
         layout: A Bokeh layout object containing the heatmap and metadata
@@ -534,8 +818,65 @@ def create_heatmap(
 
     p.add_layout(color_bar, "right")
 
-    # Customize axis tickers - use fixed hourly ticks
-    p.xaxis.ticker = list(range(int(time_start), int(time_end) + 1))
+    # Shade the pre-PAC infiltration window (garage close -> PAC on) and the
+    # post-PAC decay window, using the event times from the burn log. No new
+    # times are invented here.
+    if events is not None:
+        gc = events.get("garage_closed")
+        pac = events.get("cr_box_on")
+        if gc is not None and pac is not None and pac > gc:
+            p.add_layout(
+                BoxAnnotation(
+                    left=gc, right=pac, fill_color="#999999", fill_alpha=0.18,
+                    level="underlay",
+                )
+            )
+        if decay_window is not None:
+            d0, d1 = decay_window
+            if d0 is not None and d1 is not None and d1 > d0:
+                p.add_layout(
+                    BoxAnnotation(
+                        left=d0, right=d1, fill_color="#0072B2", fill_alpha=0.12,
+                        level="underlay",
+                    )
+                )
+
+    # Overlay the geometric mean diameter trace so the mode shift across PAC
+    # activation is visible.
+    if gmd_trace is not None:
+        gmd_arr = np.asarray(gmd_trace, dtype=float)
+        finite = np.isfinite(gmd_arr) & np.isfinite(np.asarray(time_hours))
+        if finite.any():
+            p.line(
+                np.asarray(time_hours)[finite],
+                gmd_arr[finite],
+                line_color="black",
+                line_width=2,
+                legend_label="Geometric mean diameter",
+            )
+
+    # Vertical event lines (ignition, garage closed, PAC/CR Box on).
+    if events is not None:
+        event_styles = [
+            ("ignition", "#E69F00", "dotted", "Ignition"),
+            ("garage_closed", "black", "solid", "Garage closed"),
+            ("cr_box_on", "#D55E00", "dashed", "CR Box on"),
+        ]
+        for key, color, dash, label in event_styles:
+            h = events.get(key)
+            if h is not None:
+                p.add_layout(
+                    Span(
+                        location=h, dimension="height", line_color=color,
+                        line_dash=dash, line_width=2,
+                    )
+                )
+
+    if p.legend:
+        p.legend.location = "top_right"
+        p.legend.label_text_font_size = "9pt"
+        p.legend.background_fill_alpha = 0.7
+
 
     # Custom y-axis tickers (logarithmic)
     p.yaxis.ticker = [10, 20, 40, 60, 80, 100, 200, 400]
@@ -594,7 +935,7 @@ def process_single_burn(burn_date, data_type="numConc", time_start=0, time_end=2
         return
 
     # Prepare data
-    data_for_plot, time_hours, size_bins, min_size, max_size = prepare_data(
+    data_for_plot, time_hours, size_bins, min_size, max_size, gmd_trace = prepare_data(
         file_path, burn_date
     )
 
@@ -621,9 +962,15 @@ def process_single_burn(burn_date, data_type="numConc", time_start=0, time_end=2
     print(f"Range: {data_min:.2f} to {data_max:.2f}")
     print(f"Time points: {len(time_hours)}, Size bins: {len(size_bins)}")
 
+    # Event times and post-PAC decay window for the before/after shading.
+    events = get_burn_events(burn_date)
+    decay_window = get_decay_window_hours(burn_date)
+    _report_burn_quality(burn_date, description, data_type, time_hours, events)
+
     # Reset Bokeh output for this plot
     reset_output()
-    output_notebook()
+    if _SHOW_INLINE:
+        output_notebook()
 
     # Create heatmap
     try:
@@ -641,10 +988,13 @@ def process_single_burn(burn_date, data_type="numConc", time_start=0, time_end=2
             time_end,
             min_size,
             max_size,
+            gmd_trace=gmd_trace,
+            events=events,
+            decay_window=decay_window,
         )
 
         # First show the figure in the notebook
-        show(heatmap)
+        _maybe_show(heatmap)
 
         # Then save the figure to file
         output_file_path = (
@@ -653,6 +1003,13 @@ def process_single_burn(burn_date, data_type="numConc", time_start=0, time_end=2
         output_file(output_file_path)
         save(heatmap, filename=output_file_path)
         print(f"Saved figure to {output_file_path}")
+
+        # Publication PNG via the shared ES&T Air style module.
+        save_est_png(
+            data_for_plot, time_hours, size_bins, description, data_type,
+            time_start, time_end, min_size, max_size, gmd_trace, events,
+            decay_window,
+        )
 
         print(f"Completed {description} heatmap")
         return True
@@ -683,6 +1040,10 @@ def process_all_burns(data_type="numConc", time_start=0, time_end=24):
     all_descriptions = []
     all_min_sizes = []
     all_max_sizes = []
+    all_gmd_traces = []
+    all_events = []
+    all_decay_windows = []
+    all_burn_dates = []
     data_min, data_max = float("inf"), float("-inf")
 
     # First pass - collect data and determine global range
@@ -700,7 +1061,7 @@ def process_all_burns(data_type="numConc", time_start=0, time_end=24):
             continue
 
         # Prepare data
-        data_for_plot, time_hours, size_bins, min_size, max_size = prepare_data(
+        data_for_plot, time_hours, size_bins, min_size, max_size, gmd_trace = prepare_data(
             file_path, burn_date
         )
 
@@ -735,6 +1096,10 @@ def process_all_burns(data_type="numConc", time_start=0, time_end=24):
             all_min_sizes.append(min_size)
             all_max_sizes.append(max_size)
             all_descriptions.append(description)
+            all_gmd_traces.append(gmd_trace)
+            all_events.append(get_burn_events(burn_date))
+            all_decay_windows.append(get_decay_window_hours(burn_date))
+            all_burn_dates.append(burn_date)
 
             print(f"Successfully processed data for {description}")
             print(f"Range: {current_min:.2f} to {current_max:.2f}")
@@ -755,6 +1120,10 @@ def process_all_burns(data_type="numConc", time_start=0, time_end=24):
         min_size,
         max_size,
         description,
+        gmd_trace,
+        events,
+        decay_window,
+        burn_date,
     ) in enumerate(
         zip(
             all_data_for_plot,
@@ -763,12 +1132,17 @@ def process_all_burns(data_type="numConc", time_start=0, time_end=24):
             all_min_sizes,
             all_max_sizes,
             all_descriptions,
+            all_gmd_traces,
+            all_events,
+            all_decay_windows,
+            all_burn_dates,
         )
     ):
 
         # Reset Bokeh output for each new plot
         reset_output()
-        output_notebook()
+        if _SHOW_INLINE:
+            output_notebook()
 
         print(f"\nCreating heatmap for {description}...")
 
@@ -786,10 +1160,13 @@ def process_all_burns(data_type="numConc", time_start=0, time_end=24):
                 time_end,
                 min_size,
                 max_size,
+                gmd_trace=gmd_trace,
+                events=events,
+                decay_window=decay_window,
             )
 
             # First show the plot in the notebook
-            show(heatmap)
+            _maybe_show(heatmap)
 
             # Then save to file
             output_file_path = (
@@ -798,6 +1175,13 @@ def process_all_burns(data_type="numConc", time_start=0, time_end=24):
             output_file(output_file_path)
             save(heatmap, filename=output_file_path)
             print(f"Saved figure to {output_file_path}")
+
+            # Publication PNG via the shared ES&T Air style module.
+            save_est_png(
+                data_for_plot, time_hours, size_bins, description, data_type,
+                time_start, time_end, min_size, max_size, gmd_trace, events,
+                decay_window,
+            )
 
             print(f"Completed {description} heatmap")
         except Exception as e:
@@ -809,19 +1193,34 @@ def process_all_burns(data_type="numConc", time_start=0, time_end=24):
 
 # Execute main function
 if __name__ == "__main__":
+    import argparse
+
     # Define time range to use for all plots (0-24 hours by default)
-    # Change these values to adjust the x-axis time range
     time_start = 0  # Start time in hours (e.g., 0 = midnight)
     time_end = 24  # End time in hours (e.g., 24 = midnight next day)
 
-    # For tuning a single burn, uncomment this:
-    # process_single_burn('2024-05-31', 'numConc', time_start, time_end)
+    parser = argparse.ArgumentParser(
+        description="SMPS size-distribution heatmaps with event lines, GMD "
+        "overlay, and pre/post-PAC shading."
+    )
+    parser.add_argument(
+        "--burn", default="2024-05-31",
+        help="Burn date 'YYYY-MM-DD' for the before/after-PAC figure "
+        "(default 2024-05-31, Burn 10). Use --all to process every burn.",
+    )
+    parser.add_argument(
+        "--all", action="store_true",
+        help="Process all burns (keeps the original CLI behavior).",
+    )
+    args = parser.parse_args()
 
-    # For processing all burns:
-    # Process number concentration data
-    process_all_burns(data_type="numConc", time_start=time_start, time_end=time_end)
-
-    # Process mass concentration data
-    process_all_burns(data_type="MassConc", time_start=time_start, time_end=time_end)
+    if args.all:
+        # Original behavior: all burns, both data types.
+        process_all_burns(data_type="numConc", time_start=time_start, time_end=time_end)
+        process_all_burns(data_type="MassConc", time_start=time_start, time_end=time_end)
+    else:
+        # Selected burn (default Burn 10): number then mass.
+        process_single_burn(args.burn, "numConc", time_start, time_end)
+        process_single_burn(args.burn, "MassConc", time_start, time_end)
 
 # %%

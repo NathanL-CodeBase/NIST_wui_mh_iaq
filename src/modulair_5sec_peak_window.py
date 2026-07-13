@@ -91,10 +91,10 @@ UNIT_LOCATION = {u: UNIT_CONFIG[u]["location"] for u in UNITS}
 # edge samples where the OPC small bins are still elevated, which would mask
 # the suppression they undergo once the nephelometer is truly pinned.
 NEPH_CEILING = 65535.0
-SAT_FRAC = 1.0           # plateau = neph_bin0 at the exact 16-bit ceiling
-RECOVERY_FRAC = 0.95     # peak window ends when neph_bin0 first drops below
-                         # 95 % of the plateau on the recovery side
-MIN_SAT_SAMPLES = 6      # >= 6 samples (30 s) to call it a real plateau
+SAT_FRAC = 1.0  # plateau = neph_bin0 at the exact 16-bit ceiling
+RECOVERY_FRAC = 0.95  # peak window ends when neph_bin0 first drops below
+# 95 % of the plateau on the recovery side
+MIN_SAT_SAMPLES = 6  # >= 6 samples (30 s) to call it a real plateau
 
 # Fallback peak-window definition for records that carry smoke but never pin
 # neph_bin0 at the 16-bit ceiling (all MODULAIR-PM1 records and burn8
@@ -110,7 +110,7 @@ MIN_SAT_SAMPLES = 6      # >= 6 samples (30 s) to call it a real plateau
 # only fires when SAT detection fails. peak_window_method records which path
 # produced the window: "neph_saturation" | "fallback_burnlog" |
 # "fallback_aerotrak" | "fallback_opc".
-FALLBACK_HALF_WIDTH_FLOOR_MIN = 2.5   # min half-width if no saturated median yet
+FALLBACK_HALF_WIDTH_FLOOR_MIN = 2.5  # min half-width if no saturated median yet
 
 # burn8 MODULAIR-PM2 near-saturation diagnostic / relaxed-saturation test. The
 # detector's exact-ceiling test (SAT_FRAC = 1.0) is the primary saturation
@@ -142,14 +142,14 @@ MIN_BASELINE_FOR_RATIO = 0.5
 MIN_PEAK_COUNT_ELEVATED = 1.0
 
 # Bin-response classification thresholds (peak/pre ratio).
-SUPPRESSED_MAX = 0.5     # ratio < 0.5  -> suppressed
-ELEVATED_MIN = 2.0       # ratio > 2.0  -> elevated; in between -> unchanged
+SUPPRESSED_MAX = 0.5  # ratio < 0.5  -> suppressed
+ELEVATED_MIN = 2.0  # ratio > 2.0  -> elevated; in between -> unchanged
 
 # Portal QA/QC removal window detection. The portal sets pm25 to NaN for
 # removed minutes; such NaN rows also appear sporadically through the day, so
 # the removal window is the contiguous block of removed minutes near the peak.
-QAQC_SEARCH_MIN = 30     # search NaN rows within +/- this of the peak/ignition
-QAQC_GAP_MIN = 3         # grow the block across gaps up to this many minutes
+QAQC_SEARCH_MIN = 30  # search NaN rows within +/- this of the peak/ignition
+QAQC_GAP_MIN = 3  # grow the block across gaps up to this many minutes
 
 # Co-located AeroTrak coincidence CSV (peak PM3 mass + Ch1 reversal interval).
 AEROTRAK_CSV = "aerotrak_coincidence_per_burn.csv"
@@ -456,9 +456,7 @@ def _portal_qaqc_window(
             out["overlap_with_peak_window"] = float(ov_s / peak_dur_s)
         else:
             out["overlap_with_peak_window"] = 0.0
-        out["tail_extension_minutes"] = float(
-            max(0.0, (q_end - t_peak_end).total_seconds()) / 60.0
-        )
+        out["tail_extension_minutes"] = float(max(0.0, (q_end - t_peak_end).total_seconds()) / 60.0)
     return out
 
 
@@ -467,9 +465,7 @@ def _portal_qaqc_window(
 # ==============================================================================
 
 
-def _classify_bin(
-    ratio: float, pre_count: float, peak_count: float
-) -> str:
+def _classify_bin(ratio: float, pre_count: float, peak_count: float) -> str:
     """
     Classify a bin's peak-window response robustly against a near-zero baseline.
 
@@ -607,9 +603,7 @@ def _neph_plateau(
         return out
     for j, b in enumerate(["neph_bin0", "neph_bin1"]):
         if b in df.columns:
-            out[f"plateau_bin{j}"] = float(
-                pd.to_numeric(df[b], errors="coerce")[mask].median()
-            )
+            out[f"plateau_bin{j}"] = float(pd.to_numeric(df[b], errors="coerce")[mask].median())
     return out
 
 
@@ -632,8 +626,16 @@ def _load_aerotrak() -> pd.DataFrame | None:
     at = pd.read_csv(path)
     keep = [
         c
-        for c in ("burn", "location", "peak_total_PM3_mass_ug_m3", "reversal_present",
-                  "reversal_onset", "t_min", "reversal_end", "t_peak")
+        for c in (
+            "burn",
+            "location",
+            "peak_total_PM3_mass_ug_m3",
+            "reversal_present",
+            "reversal_onset",
+            "t_min",
+            "reversal_end",
+            "t_peak",
+        )
         if c in at.columns
     ]
     return at[keep].copy()
@@ -663,10 +665,12 @@ def _aerotrak_for_pair(at: pd.DataFrame | None, burn_id: str, unit: str) -> dict
     out["aerotrak_peak_PM3_mass_ug_m3"] = float(r.get("peak_total_PM3_mass_ug_m3", np.nan))
     rev = r.get("reversal_present", np.nan)
     out["aerotrak_reversal_present"] = bool(rev) if pd.notna(rev) else np.nan
-    for src, dst in (("reversal_onset", "aerotrak_reversal_onset"),
-                     ("t_min", "aerotrak_t_min"),
-                     ("reversal_end", "aerotrak_reversal_end"),
-                     ("t_peak", "aerotrak_t_peak")):
+    for src, dst in (
+        ("reversal_onset", "aerotrak_reversal_onset"),
+        ("t_min", "aerotrak_t_min"),
+        ("reversal_end", "aerotrak_reversal_end"),
+        ("t_peak", "aerotrak_t_peak"),
+    ):
         if src in row.columns and pd.notna(r.get(src)):
             out[dst] = pd.to_datetime(r[src], errors="coerce")
     return out
@@ -677,8 +681,9 @@ def _aerotrak_for_pair(at: pd.DataFrame | None, burn_id: str, unit: str) -> dict
 # ==============================================================================
 
 
-def _saturation_diagnostic(df: pd.DataFrame, burn_id: str, unit: str,
-                           peak_lo: pd.Timestamp, peak_hi: pd.Timestamp) -> None:
+def _saturation_diagnostic(
+    df: pd.DataFrame, burn_id: str, unit: str, peak_lo: pd.Timestamp, peak_hi: pd.Timestamp
+) -> None:
     """
     Print the per-record near-saturation diagnostic (FIX B2).
 
@@ -697,7 +702,7 @@ def _saturation_diagnostic(df: pd.DataFrame, burn_id: str, unit: str,
     n_near = int((nb0 >= NEAR_SAT_FRAC * NEPH_CEILING).sum())
     covers = "n/a"
     if pd.notna(peak_lo) and pd.notna(peak_hi):
-        in_peak = ((ts >= peak_lo) & (ts <= peak_hi))
+        in_peak = (ts >= peak_lo) & (ts <= peak_hi)
         if in_peak.any():
             gaps = ts[in_peak].diff().dt.total_seconds()
             max_gap = float(gaps.max()) if gaps.notna().any() else 0.0
@@ -740,10 +745,17 @@ def analyze_pair(
     if df is None or df.empty:
         print(f"    [{burn_id}|{unit}] no 5 s data - flagged, not imputed.")
         return dict(
-            burn=burn_id, unit=unit, location=UNIT_LOCATION[unit],
-            data_present=False, saturated=False, peak_window_method="none",
+            burn=burn_id,
+            unit=unit,
+            location=UNIT_LOCATION[unit],
+            data_present=False,
+            saturated=False,
+            peak_window_method="none",
             notes="5 s data missing",
-            _df=None, _portal=None, _ignition=ignition, _garage=garage,
+            _df=None,
+            _portal=None,
+            _ignition=ignition,
+            _garage=garage,
             _pac_on=pac_on,
         )
 
@@ -753,9 +765,7 @@ def analyze_pair(
     # AeroTrak PM3 peak time for the fallback (b) anchor.
     at_t_peak = atx.get("aerotrak_t_peak", pd.NaT)
 
-    pw = _detect_peak_window(
-        df, ignition, garage, pac_on, at_t_peak, sat_half_width_min
-    )
+    pw = _detect_peak_window(df, ignition, garage, pac_on, at_t_peak, sat_half_width_min)
 
     # Near-saturation diagnostic for every non-saturating record (FIX B2).
     if not pw["saturated"]:
@@ -767,9 +777,7 @@ def analyze_pair(
         _saturation_diagnostic(df, burn_id, unit, peak_lo, pac_on)
 
     qa = _portal_qaqc_window(portal, pw["t_peak_start"], pw["t_peak_end"], ignition)
-    opc = _opc_response(
-        df, ignition, pw["t_peak_start"], pw["t_peak_end"], pw["saturated"]
-    )
+    opc = _opc_response(df, ignition, pw["t_peak_start"], pw["t_peak_end"], pw["saturated"])
     neph = _neph_plateau(df, pw["t_peak_start"], pw["t_peak_end"])
 
     # Cross-reference the MODULAIR-PM peak window against the full AeroTrak Ch1
@@ -784,9 +792,12 @@ def analyze_pair(
     rev_overlap_frac = np.nan
     rev_gap_min = np.nan
     has_window = pd.notna(pw["t_peak_start"]) and pd.notna(pw["t_peak_end"])
-    if (atx["aerotrak_reversal_present"] is True and has_window
-            and pd.notna(atx["aerotrak_reversal_onset"])
-            and pd.notna(atx["aerotrak_reversal_end"])):
+    if (
+        atx["aerotrak_reversal_present"] is True
+        and has_window
+        and pd.notna(atx["aerotrak_reversal_onset"])
+        and pd.notna(atx["aerotrak_reversal_end"])
+    ):
         a0, a1 = atx["aerotrak_reversal_onset"], atx["aerotrak_reversal_end"]
         p0, p1 = pw["t_peak_start"], pw["t_peak_end"]
         peak_dur_s = (p1 - p0).total_seconds()
@@ -818,13 +829,25 @@ def analyze_pair(
         notes.append("portal product missing")
 
     rec = dict(
-        burn=burn_id, unit=unit, location=UNIT_LOCATION[unit],
-        data_present=True, portal_present=portal is not None,
+        burn=burn_id,
+        unit=unit,
+        location=UNIT_LOCATION[unit],
+        data_present=True,
+        portal_present=portal is not None,
         bedroom_sealed=(unit == "MODULAIR-PM1" and burn_id in BEDROOM_SEALED_BURNS),
-        **{k: pw[k] for k in (
-            "saturated", "peak_window_method", "t_peak_start", "t_peak_end",
-            "plateau_value", "peak_window_duration_seconds",
-            "peak_window_duration_minutes", "n_sat_samples")},
+        **{
+            k: pw[k]
+            for k in (
+                "saturated",
+                "peak_window_method",
+                "t_peak_start",
+                "t_peak_end",
+                "plateau_value",
+                "peak_window_duration_seconds",
+                "peak_window_duration_minutes",
+                "n_sat_samples",
+            )
+        },
         **qa,
         **{k: opc[k] for k in opc if k != "all_ratios"},
         **neph,
@@ -833,9 +856,14 @@ def analyze_pair(
         aerotrak_reversal_gap_minutes=rev_gap_min,
         notes="; ".join(notes),
         # private
-        _df=df, _portal=portal, _ignition=ignition, _garage=garage,
-        _pac_on=pac_on, _opc_all_ratios=opc["all_ratios"],
-        _opc_pre_profile=opc["pre_profile"], _opc_peak_profile=opc["peak_profile"],
+        _df=df,
+        _portal=portal,
+        _ignition=ignition,
+        _garage=garage,
+        _pac_on=pac_on,
+        _opc_all_ratios=opc["all_ratios"],
+        _opc_pre_profile=opc["pre_profile"],
+        _opc_peak_profile=opc["peak_profile"],
     )
     return rec
 
@@ -847,11 +875,22 @@ def analyze_pair(
 # OPC bins 0-6 plotted in the bottom panel: dark (small) -> light (large).
 _OPC_FIG_BINS = [f"bin{i}" for i in range(7)]
 _OPC_FIG_COLORS = [
-    "#004D00", "#1A6B1A", "#2D8B2D", "#43A843", "#66BB66", "#95D595", "#C8EEC8",
+    "#004D00",
+    "#1A6B1A",
+    "#2D8B2D",
+    "#43A843",
+    "#66BB66",
+    "#95D595",
+    "#C8EEC8",
 ]
 _NEPH_FIG_BINS = NEPH_BINS  # all six
 _NEPH_FIG_COLORS = [
-    "#67000D", "#A50026", "#D73027", "#F46D43", "#FDAE61", "#FEE8C8",
+    "#67000D",
+    "#A50026",
+    "#D73027",
+    "#F46D43",
+    "#FDAE61",
+    "#FEE8C8",
 ]
 _BOKEH_TOOLS = "pan,box_zoom,wheel_zoom,crosshair,reset,save"
 
@@ -870,7 +909,9 @@ def _event_spans(p, rec: dict) -> None:
             p.add_layout(
                 Span(
                     location=int(pd.Timestamp(t_ev).timestamp() * 1000),
-                    dimension="height", line_color=color, line_dash=dash,
+                    dimension="height",
+                    line_color=color,
+                    line_dash=dash,
                     line_width=1.4,
                 )
             )
@@ -907,7 +948,9 @@ def _bokeh_pair(rec: dict, t_pad_min: float = 30.0) -> None:
 
     # --- top: nephelometer ---
     p_top = figure(
-        x_axis_type="datetime", width=1400, height=420,
+        x_axis_type="datetime",
+        width=1400,
+        height=420,
         title=f"{title}  -  PMS5003 nephelometer raw signal",
         tools=_BOKEH_TOOLS,
     )
@@ -915,37 +958,59 @@ def _bokeh_pair(rec: dict, t_pad_min: float = 30.0) -> None:
     for b, color in zip(_NEPH_FIG_BINS, _NEPH_FIG_COLORS):
         if b not in sub.columns:
             continue
-        r = p_top.line(sub["timestamp"], pd.to_numeric(sub[b], errors="coerce"),
-                       color=color, line_width=1.4)
+        r = p_top.line(
+            sub["timestamp"], pd.to_numeric(sub[b], errors="coerce"), color=color, line_width=1.4
+        )
         items_top.append(LegendItem(label=b, renderers=[r]))
     if rec.get("saturated") and pd.notna(rec.get("plateau_value")):
-        p_top.add_layout(Span(location=rec["plateau_value"], dimension="width",
-                              line_color="black", line_dash="dotted", line_width=1.2))
-        p_top.add_layout(Label(x=int(t_lo.timestamp() * 1000), y=rec["plateau_value"],
-                               text=f"plateau ~ {rec['plateau_value']:.0f}",
-                               text_font_size="9px", text_color="black", y_offset=3))
+        p_top.add_layout(
+            Span(
+                location=rec["plateau_value"],
+                dimension="width",
+                line_color="black",
+                line_dash="dotted",
+                line_width=1.2,
+            )
+        )
+        p_top.add_layout(
+            Label(
+                x=int(t_lo.timestamp() * 1000),
+                y=rec["plateau_value"],
+                text=f"plateau ~ {rec['plateau_value']:.0f}",
+                text_font_size="9px",
+                text_color="black",
+                y_offset=3,
+            )
+        )
     p_top.yaxis.axis_label = "Neph raw signal"
     _event_spans(p_top, rec)
-    p_top.add_layout(Legend(items=items_top, click_policy="hide",
-                            label_text_font_size="8pt"), "right")
+    p_top.add_layout(
+        Legend(items=items_top, click_policy="hide", label_text_font_size="8pt"), "right"
+    )
 
     # --- bottom: OPC-N3 bins 0-6 ---
     p_bot = figure(
-        x_axis_type="datetime", width=1400, height=420, x_range=p_top.x_range,
-        title="OPC-N3 bins 0-6 raw counts", tools=_BOKEH_TOOLS,
+        x_axis_type="datetime",
+        width=1400,
+        height=420,
+        x_range=p_top.x_range,
+        title="OPC-N3 bins 0-6 raw counts",
+        tools=_BOKEH_TOOLS,
     )
     items_bot = []
     for b, color in zip(_OPC_FIG_BINS, _OPC_FIG_COLORS):
         if b not in sub.columns:
             continue
-        r = p_bot.line(sub["timestamp"], pd.to_numeric(sub[b], errors="coerce"),
-                       color=color, line_width=1.4)
+        r = p_bot.line(
+            sub["timestamp"], pd.to_numeric(sub[b], errors="coerce"), color=color, line_width=1.4
+        )
         items_bot.append(LegendItem(label=b, renderers=[r]))
     p_bot.yaxis.axis_label = "OPC raw counts"
     p_bot.xaxis.axis_label = "Local time (EDT)"
     _event_spans(p_bot, rec)
-    p_bot.add_layout(Legend(items=items_bot, click_policy="hide",
-                            label_text_font_size="8pt"), "right")
+    p_bot.add_layout(
+        Legend(items=items_bot, click_policy="hide", label_text_font_size="8pt"), "right"
+    )
 
     fig_dir = get_common_file("quantaq_figures")
     fig_dir.mkdir(parents=True, exist_ok=True)
@@ -985,8 +1050,10 @@ def _mpl_bin_response_grid(results: list[dict]) -> None:
             continue
         pre = np.array(r.get("_opc_pre_profile") or [], dtype=float)
         peak = np.array(r.get("_opc_peak_profile") or [], dtype=float)
-        if pre.size == 0 or peak.size == 0 or not (
-            np.isfinite(pre).any() and np.isfinite(peak).any()
+        if (
+            pre.size == 0
+            or peak.size == 0
+            or not (np.isfinite(pre).any() and np.isfinite(peak).any())
         ):
             dropped.append((r["burn"], r["unit"], "no count profile"))
             continue
@@ -1000,9 +1067,9 @@ def _mpl_bin_response_grid(results: list[dict]) -> None:
 
     ncols = 3
     nrows = int(np.ceil(len(panels) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(figsize("double")[0],
-                                                    2.3 * nrows),
-                             sharex=True, sharey=True)
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(figsize("double")[0], 2.3 * nrows), sharex=True, sharey=True
+    )
     axes = np.array(axes).flatten()
 
     bin0_lo, bin0_hi = OPC_BIN_EDGES_UM[0]
@@ -1015,10 +1082,28 @@ def _mpl_bin_response_grid(results: list[dict]) -> None:
         # Mask non-positive for the log axis.
         pre_v = np.where(pre > 0, pre, np.nan)
         peak_v = np.where(peak > 0, peak, np.nan)
-        ax.loglog(bin_lower, pre_v, marker="o", ms=3, lw=1.0, ls="--",
-                  color=color, alpha=0.8, label="pre-peak")
-        ax.loglog(bin_lower, peak_v, marker="s", ms=3, lw=1.3, ls="-",
-                  color=color, alpha=0.95, label="peak window")
+        ax.loglog(
+            bin_lower,
+            pre_v,
+            marker="o",
+            ms=3,
+            lw=1.0,
+            ls="--",
+            color=color,
+            alpha=0.8,
+            label="pre-peak",
+        )
+        ax.loglog(
+            bin_lower,
+            peak_v,
+            marker="s",
+            ms=3,
+            lw=1.3,
+            ls="-",
+            color=color,
+            alpha=0.95,
+            label="peak window",
+        )
         # Mark bin 0.
         ax.axvspan(bin0_lo, bin0_hi, color=SHADE, alpha=0.18, lw=0)
         tag = "Bdrm" if rec["unit"] == "MODULAIR-PM1" else "MR"
@@ -1026,7 +1111,7 @@ def _mpl_bin_response_grid(results: list[dict]) -> None:
         ax.set_title(f"{rec['burn']} {tag} ({sat})", fontsize=_FS - 1)
         ax.tick_params(labelsize=_FS - 2)
 
-    for ax in axes[len(panels):]:
+    for ax in axes[len(panels) :]:
         ax.set_visible(False)
 
     # Shared axis labels and one legend.
@@ -1034,16 +1119,33 @@ def _mpl_bin_response_grid(results: list[dict]) -> None:
     fig.supylabel("OPC-N3 count concentration (counts per 5 s)", fontsize=_FS)
 
     from matplotlib.lines import Line2D
+
     handles = [
         Line2D([0], [0], color="#555555", marker="o", ls="--", label="pre-peak baseline"),
         Line2D([0], [0], color="#555555", marker="s", ls="-", label="peak window"),
-        Line2D([0], [0], color=UNIT_COLOR["MODULAIR-PM1"], lw=4,
-               label=UNIT_CONFIG["MODULAIR-PM1"]["location_label"]),
-        Line2D([0], [0], color=UNIT_COLOR["MODULAIR-PM2"], lw=4,
-               label=UNIT_CONFIG["MODULAIR-PM2"]["location_label"]),
+        Line2D(
+            [0],
+            [0],
+            color=UNIT_COLOR["MODULAIR-PM1"],
+            lw=4,
+            label=UNIT_CONFIG["MODULAIR-PM1"]["location_label"],
+        ),
+        Line2D(
+            [0],
+            [0],
+            color=UNIT_COLOR["MODULAIR-PM2"],
+            lw=4,
+            label=UNIT_CONFIG["MODULAIR-PM2"]["location_label"],
+        ),
     ]
-    fig.legend(handles=handles, loc="lower right", ncol=1,
-               fontsize=_FS - 2, frameon=True, bbox_to_anchor=(0.98, 0.04))
+    fig.legend(
+        handles=handles,
+        loc="lower right",
+        ncol=1,
+        fontsize=_FS - 2,
+        frameon=True,
+        bbox_to_anchor=(0.98, 0.04),
+    )
 
     fig_dir = get_common_file("quantaq_figures")
     save_fig(fig, fig_dir / "modulair_5sec_bin_response_grid.png")
@@ -1073,9 +1175,14 @@ def _mpl_qaqc_timeseries_fig2(results: list[dict]) -> None:
     """
     burn_no = FIG2_BURN.replace("burn", "").zfill(2)
     loc_label = UNIT_CONFIG[FIG2_UNIT]["location_label"]
-    rec = next((r for r in results
-                if r["burn"] == FIG2_BURN and r["unit"] == FIG2_UNIT
-                and r.get("data_present")), None)
+    rec = next(
+        (
+            r
+            for r in results
+            if r["burn"] == FIG2_BURN and r["unit"] == FIG2_UNIT and r.get("data_present")
+        ),
+        None,
+    )
     if rec is None or pd.isna(rec.get("t_peak_start")):
         print(f"    [mpl] {FIG2_BURN} {FIG2_UNIT} not available for QA/QC time series.")
         return
@@ -1100,37 +1207,52 @@ def _mpl_qaqc_timeseries_fig2(results: list[dict]) -> None:
     color = UNIT_COLOR[FIG2_UNIT]
 
     fig, axes = plt.subplots(
-        3, 1, figsize=(figsize("double")[0], 5.4), sharex=True,
+        3,
+        1,
+        figsize=(figsize("double")[0], 5.4),
+        sharex=True,
         gridspec_kw={"height_ratios": [3, 3, 0.8]},
     )
     ax_neph, ax_opc, ax_strip = axes
 
     # (a) Nephelometer bin0 with the 16-bit ceiling.
-    ax_neph.plot(ts, pd.to_numeric(sub["neph_bin0"], errors="coerce"),
-                 color=ROLE_COLORS["PMS5003"], lw=1.2)
+    ax_neph.plot(
+        ts, pd.to_numeric(sub["neph_bin0"], errors="coerce"), color=ROLE_COLORS["PMS5003"], lw=1.2
+    )
     ax_neph.axhline(NEPH_CEILING, color=REF_LINE, ls="--", lw=1.0)
-    ax_neph.annotate("16-bit ceiling (65535)", xy=(ts.iloc[0], NEPH_CEILING),
-                     xytext=(2, -10), textcoords="offset points",
-                     fontsize=_FS - 3, color=REF_LINE, va="top")
+    ax_neph.annotate(
+        "16-bit ceiling (65535)",
+        xy=(ts.iloc[0], NEPH_CEILING),
+        xytext=(2, -10),
+        textcoords="offset points",
+        fontsize=_FS - 3,
+        color=REF_LINE,
+        va="top",
+    )
     ax_neph.set_ylabel("PMS5003\nneph bin0", fontsize=_FS - 1)
-    ax_neph.set_title(f"Burn {burn_no} {loc_label} ({FIG2_UNIT}): saturated "
-                      "nephelometer, suppressed OPC-N3 bin 0, and portal "
-                      "QA/QC removal coincide", fontsize=_FS - 1)
+    # ax_neph.set_title(f"Burn {burn_no} {loc_label} ({FIG2_UNIT}): saturated "
+    #                  "nephelometer, suppressed OPC-N3 bin 0, and portal "
+    #                  "QA/QC removal coincide", fontsize=_FS - 1)
 
     # (b) OPC-N3 bin0 suppression.
-    ax_opc.plot(ts, pd.to_numeric(sub["bin0"], errors="coerce"),
-                color=color, lw=1.2)
-    ax_opc.set_ylabel("OPC-N3 bin0\n(counts per 5 s)", fontsize=_FS - 1)
+    ax_opc.plot(ts, pd.to_numeric(sub["bin0"], errors="coerce"), color=color, lw=1.2)
+    ax_opc.set_ylabel("OPC-N3 bin0", fontsize=_FS - 1)
 
     # (c) Peak-window span + portal QA/QC removal interval.
-    ax_strip.axvspan(t0, t1, ymin=0.55, ymax=0.95, color=color, alpha=0.35,
-                     label="5 s peak window")
+    ax_strip.axvspan(t0, t1, ymin=0.55, ymax=0.95, color=color, alpha=0.35, label="5 s peak window")
     if pd.notna(q0) and pd.notna(q1):
-        ax_strip.axvspan(q0, q1, ymin=0.10, ymax=0.50, color=ROLE_COLORS["SMPS"],
-                         alpha=0.6, label="portal QA/QC removal")
+        ax_strip.axvspan(
+            q0,
+            q1,
+            ymin=0.10,
+            ymax=0.50,
+            color=ROLE_COLORS["SMPS"],
+            alpha=0.6,
+            label="portal QA/QC removal",
+        )
     ax_strip.set_yticks([])
     ax_strip.set_ylabel("intervals", fontsize=_FS - 2)
-    ax_strip.legend(loc="lower center", fontsize=_FS - 3, frameon=True, ncol=2)
+    ax_strip.legend(loc="lower right", fontsize=_FS - 3, frameon=True)
     ax_strip.set_xlabel("Local time (EDT)", fontsize=_FS)
 
     # Vertical guides at the peak-window bounds across the data panels.
@@ -1142,6 +1264,7 @@ def _mpl_qaqc_timeseries_fig2(results: list[dict]) -> None:
     # Thin and rotate the shared x-axis time ticks so the EDT labels stop
     # colliding on the narrow peak window.
     import matplotlib.dates as mdates
+
     locator = mdates.AutoDateLocator(minticks=3, maxticks=6)
     ax_strip.xaxis.set_major_locator(locator)
     ax_strip.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
@@ -1160,7 +1283,8 @@ def _mpl_qaqc_overlap(results: list[dict]) -> None:
     saturated pairs. Unit and location are explicit in the x labels.
     """
     rows = [
-        r for r in results
+        r
+        for r in results
         if r.get("data_present")
         and pd.notna(r.get("t_peak_end"))
         and not np.isnan(r.get("peak_window_duration_minutes", np.nan))
@@ -1170,10 +1294,7 @@ def _mpl_qaqc_overlap(results: list[dict]) -> None:
         return
 
     rows = sorted(rows, key=lambda r: (int(r["burn"].replace("burn", "")), r["unit"]))
-    labels = [
-        f"{r['burn']}\n{'Bdrm' if r['unit'] == 'MODULAIR-PM1' else 'MR'}"
-        for r in rows
-    ]
+    labels = [f"{r['burn']}\n{'Bdrm' if r['unit'] == 'MODULAIR-PM1' else 'MR'}" for r in rows]
     peak_dur = [r["peak_window_duration_minutes"] for r in rows]
     qaqc_dur = [r.get("portal_qaqc_removal_duration_minutes", np.nan) for r in rows]
     # Hatch the near-ceiling fallback windows so they read distinctly from the
@@ -1190,16 +1311,15 @@ def _mpl_qaqc_overlap(results: list[dict]) -> None:
             bar.set_hatch(hatch)
     ax.bar(x + w / 2, qaqc_dur, w, color=ROLE_COLORS["SMPS"], alpha=0.85)
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=_FS - 3, rotation=30, ha="right")
+    ax.set_xticklabels(labels, fontsize=_FS - 3, rotation=90, ha="center")
     ax.set_ylabel("Duration (minutes)", fontsize=_FS)
-    ax.set_title("Peak window vs portal QA/QC removal", fontsize=_FS)
     ax.tick_params(labelsize=_FS - 1)
 
     from matplotlib.patches import Patch
+
     handles = [
         Patch(color=sat_color, alpha=0.85, label="5 s peak window (saturated)"),
-        Patch(facecolor=sat_color, alpha=0.85, hatch="///",
-              label="5 s peak window (fallback)"),
+        Patch(facecolor=sat_color, alpha=0.85, hatch="///", label="5 s peak window (fallback)"),
         Patch(color=ROLE_COLORS["SMPS"], alpha=0.85, label="Portal QA/QC removal"),
     ]
     ax.legend(handles=handles, fontsize=_FS - 2)
@@ -1214,21 +1334,46 @@ def _mpl_qaqc_overlap(results: list[dict]) -> None:
 
 # Per-burn CSV column order (one row per burn-unit pair).
 _PER_BURN_COLS = [
-    "burn", "unit", "location", "bedroom_sealed", "data_present",
-    "portal_present", "saturated", "peak_window_method",
-    "t_peak_start", "t_peak_end", "plateau_value",
-    "peak_window_duration_seconds", "peak_window_duration_minutes",
+    "burn",
+    "unit",
+    "location",
+    "bedroom_sealed",
+    "data_present",
+    "portal_present",
+    "saturated",
+    "peak_window_method",
+    "t_peak_start",
+    "t_peak_end",
+    "plateau_value",
+    "peak_window_duration_seconds",
+    "peak_window_duration_minutes",
     "n_sat_samples",
-    "portal_qaqc_removal_start", "portal_qaqc_removal_end",
-    "portal_qaqc_removal_duration_minutes", "overlap_with_peak_window",
+    "portal_qaqc_removal_start",
+    "portal_qaqc_removal_end",
+    "portal_qaqc_removal_duration_minutes",
+    "overlap_with_peak_window",
     "tail_extension_minutes",
-    "ratio_bin0", "class_bin0", "pre_count_bin0", "peak_count_bin0",
-    "ratio_bin1", "class_bin1", "pre_count_bin1", "peak_count_bin1",
-    "ratio_bin2", "class_bin2", "pre_count_bin2", "peak_count_bin2",
-    "plateau_bin0", "plateau_bin1",
-    "aerotrak_peak_PM3_mass_ug_m3", "aerotrak_reversal_present",
-    "aerotrak_reversal_onset", "aerotrak_t_min", "aerotrak_reversal_end",
-    "aerotrak_reversal_overlap_fraction", "aerotrak_reversal_gap_minutes",
+    "ratio_bin0",
+    "class_bin0",
+    "pre_count_bin0",
+    "peak_count_bin0",
+    "ratio_bin1",
+    "class_bin1",
+    "pre_count_bin1",
+    "peak_count_bin1",
+    "ratio_bin2",
+    "class_bin2",
+    "pre_count_bin2",
+    "peak_count_bin2",
+    "plateau_bin0",
+    "plateau_bin1",
+    "aerotrak_peak_PM3_mass_ug_m3",
+    "aerotrak_reversal_present",
+    "aerotrak_reversal_onset",
+    "aerotrak_t_min",
+    "aerotrak_reversal_end",
+    "aerotrak_reversal_overlap_fraction",
+    "aerotrak_reversal_gap_minutes",
     "notes",
 ]
 
@@ -1257,20 +1402,20 @@ def _write_plateau_csv(results: list[dict]) -> pd.DataFrame:
     for unit in UNITS:
         sat = [r for r in results if r["unit"] == unit and r.get("saturated")]
         for j, key in enumerate(("plateau_bin0", "plateau_bin1")):
-            vals = np.array(
-                [r.get(key, np.nan) for r in sat], dtype=float
-            )
+            vals = np.array([r.get(key, np.nan) for r in sat], dtype=float)
             vals = vals[~np.isnan(vals)]
-            rows.append(dict(
-                unit=unit,
-                location=UNIT_LOCATION[unit],
-                neph_bin=f"neph_bin{j}",
-                n_saturating_burns=int(len(vals)),
-                plateau_median=float(np.median(vals)) if vals.size else np.nan,
-                plateau_min=float(np.min(vals)) if vals.size else np.nan,
-                plateau_max=float(np.max(vals)) if vals.size else np.nan,
-                plateau_std=float(np.std(vals)) if vals.size else np.nan,
-            ))
+            rows.append(
+                dict(
+                    unit=unit,
+                    location=UNIT_LOCATION[unit],
+                    neph_bin=f"neph_bin{j}",
+                    n_saturating_burns=int(len(vals)),
+                    plateau_median=float(np.median(vals)) if vals.size else np.nan,
+                    plateau_min=float(np.min(vals)) if vals.size else np.nan,
+                    plateau_max=float(np.max(vals)) if vals.size else np.nan,
+                    plateau_std=float(np.std(vals)) if vals.size else np.nan,
+                )
+            )
     df = pd.DataFrame(rows)
     path = out_dir / "modulair_5sec_neph_plateau_values.csv"
     df.to_csv(str(path), index=False, float_format="%.6g")
@@ -1290,10 +1435,7 @@ def _write_cross_burn_csv(results: list[dict]) -> dict:
     n_pairs = len(present)
     sat = [r for r in present if r.get("saturated")]
     n_sat = len(sat)
-    fallback = [
-        r for r in present
-        if str(r.get("peak_window_method", "")).startswith("fallback")
-    ]
+    fallback = [r for r in present if str(r.get("peak_window_method", "")).startswith("fallback")]
     n_fallback = len(fallback)
     # Tally fallback windows by method so the summary can state how each
     # non-saturating record got its window.
@@ -1329,9 +1471,7 @@ def _write_cross_burn_csv(results: list[dict]) -> dict:
     # shows the same bin-0 collapse via its fallback window.
     windowed = [r for r in present if pd.notna(r.get("t_peak_end"))]
     supp = [r for r in windowed if r.get("class_bin0") == "suppressed"]
-    supp_ratios = np.array(
-        [r.get("ratio_bin0", np.nan) for r in supp], dtype=float
-    )
+    supp_ratios = np.array([r.get("ratio_bin0", np.nan) for r in supp], dtype=float)
     supp_ratios = supp_ratios[~np.isnan(supp_ratios)]
 
     # QA/QC removal durations across saturating pairs.
@@ -1345,18 +1485,14 @@ def _write_cross_burn_csv(results: list[dict]) -> dict:
     # of records that actually had a removal and the non-zero distribution
     # alongside it so the QA/QC sentence is not undercut by the zeros.
     qa_nonzero = qa_dur[qa_dur > 0]
-    peak_dur = np.array(
-        [r.get("peak_window_duration_minutes", np.nan) for r in sat], dtype=float
-    )
+    peak_dur = np.array([r.get("peak_window_duration_minutes", np.nan) for r in sat], dtype=float)
     peak_dur = peak_dur[~np.isnan(peak_dur)]
 
     # burn8 MODULAIR-PM2 closest-approach to the ceiling (the near-saturation
     # diagnostic): the highest neph_bin0 among MODULAIR-PM2 records that did
     # not saturate.
     pm2_unsat_peaks = [p for (b, u, p) in near_misses if u == "MODULAIR-PM2"]
-    pm2_max_unsat_neph_bin0 = (
-        float(np.max(pm2_unsat_peaks)) if pm2_unsat_peaks else np.nan
-    )
+    pm2_max_unsat_neph_bin0 = float(np.max(pm2_unsat_peaks)) if pm2_unsat_peaks else np.nan
 
     summary = dict(
         n_burn_unit_pairs=n_pairs,
@@ -1372,27 +1508,21 @@ def _write_cross_burn_csv(results: list[dict]) -> dict:
         n_opc_bin0_suppressed=int(len(supp)),
         n_windowed=int(len(windowed)),
         opc_bin0_suppressed_median_ratio=(
-            float(np.median(supp_ratios)) if supp_ratios.size else np.nan),
-        peak_window_duration_median_min=(
-            float(np.median(peak_dur)) if peak_dur.size else np.nan),
-        peak_window_duration_min_min=(
-            float(np.min(peak_dur)) if peak_dur.size else np.nan),
-        peak_window_duration_max_min=(
-            float(np.max(peak_dur)) if peak_dur.size else np.nan),
-        qaqc_removal_duration_median_min=(
-            float(np.median(qa_dur)) if qa_dur.size else np.nan),
-        qaqc_removal_duration_min_min=(
-            float(np.min(qa_dur)) if qa_dur.size else np.nan),
-        qaqc_removal_duration_max_min=(
-            float(np.max(qa_dur)) if qa_dur.size else np.nan),
+            float(np.median(supp_ratios)) if supp_ratios.size else np.nan
+        ),
+        peak_window_duration_median_min=(float(np.median(peak_dur)) if peak_dur.size else np.nan),
+        peak_window_duration_min_min=(float(np.min(peak_dur)) if peak_dur.size else np.nan),
+        peak_window_duration_max_min=(float(np.max(peak_dur)) if peak_dur.size else np.nan),
+        qaqc_removal_duration_median_min=(float(np.median(qa_dur)) if qa_dur.size else np.nan),
+        qaqc_removal_duration_min_min=(float(np.min(qa_dur)) if qa_dur.size else np.nan),
+        qaqc_removal_duration_max_min=(float(np.max(qa_dur)) if qa_dur.size else np.nan),
         n_saturated_with_qaqc_removal=int(qa_nonzero.size),
         n_saturated_qaqc=int(qa_dur.size),
         qaqc_removal_nonzero_median_min=(
-            float(np.median(qa_nonzero)) if qa_nonzero.size else np.nan),
-        qaqc_removal_nonzero_min_min=(
-            float(np.min(qa_nonzero)) if qa_nonzero.size else np.nan),
-        qaqc_removal_nonzero_max_min=(
-            float(np.max(qa_nonzero)) if qa_nonzero.size else np.nan),
+            float(np.median(qa_nonzero)) if qa_nonzero.size else np.nan
+        ),
+        qaqc_removal_nonzero_min_min=(float(np.min(qa_nonzero)) if qa_nonzero.size else np.nan),
+        qaqc_removal_nonzero_max_min=(float(np.max(qa_nonzero)) if qa_nonzero.size else np.nan),
     )
     path = out_dir / "modulair_5sec_peak_cross_burn_summary.csv"
     pd.DataFrame([summary]).to_csv(str(path), index=False, float_format="%.4g")
@@ -1498,9 +1628,7 @@ def _write_summary_md(results: list[dict], summary: dict) -> None:
         "bin2 (class) | bin2 pre/peak ct | AeroTrak PM3 (ug/m3) | "
         "AT reversal overlap | AT gap (min) |"
     )
-    lines.append(
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
-    )
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in present:
         lines.append(
             f"| {r['burn']} | {r['unit']} | {r.get('saturated')} | "
@@ -1531,9 +1659,7 @@ def _write_summary_md(results: list[dict], summary: dict) -> None:
         method = r.get("peak_window_method", "none")
         if not r.get("saturated"):
             peak = r.get("plateau_value", np.nan)
-            short = (
-                summary["neph_ceiling"] - peak if np.isfinite(peak) else np.nan
-            )
+            short = summary["neph_ceiling"] - peak if np.isfinite(peak) else np.nan
             method_label = {
                 "fallback_burnlog": "burn-log peak-interval",
                 "fallback_aerotrak": "AeroTrak-peak",
@@ -1570,8 +1696,7 @@ def _write_summary_md(results: list[dict], summary: dict) -> None:
         # Flag only when the AeroTrak reversed but its interval does not overlap
         # the MODULAIR-PM peak window at all (gap > 0 and overlap fraction 0).
         ov = r.get("aerotrak_reversal_overlap_fraction", np.nan)
-        if (r.get("aerotrak_reversal_present") is True
-                and not np.isnan(ov) and ov == 0.0):
+        if r.get("aerotrak_reversal_present") is True and not np.isnan(ov) and ov == 0.0:
             gap = r.get("aerotrak_reversal_gap_minutes", np.nan)
             lines.append(
                 f"- {r['burn']} {r['unit']}: AeroTrak Ch1 reversal interval did "
@@ -1702,22 +1827,22 @@ def _write_manuscript_md(results: list[dict], summary: dict) -> None:
         "not accessible' text in the manuscript. Note: the on-instrument record "
         "is logged at 5 s (0.2 Hz) cadence; the manuscript should refer to it as "
         "5 s data, not 5 Hz._\n\n---\n\n"
-        f"**Intro sentence:** \"{s_intro}\"\n\n"
-        f"**Nephelometer saturation:** \"{s_neph}\"\n\n"
-        f"**OPC-N3 suppression:** \"{s_opc}\"\n\n"
-        f"**QA/QC alignment:** \"{s_qaqc}\"\n\n"
+        f'**Intro sentence:** "{s_intro}"\n\n'
+        f'**Nephelometer saturation:** "{s_neph}"\n\n'
+        f'**OPC-N3 suppression:** "{s_opc}"\n\n'
+        f'**QA/QC alignment:** "{s_qaqc}"\n\n'
         "---\n\n## Replacement paragraph (third paragraph of 3.2.3)\n\n"
         f"{para}\n\n"
         "---\n\n## Figure captions (reworked figures)\n\n"
         "**Figure 2 (main text), modulair_5sec_qaqc_timeseries_burn6.png:** "
-        "\"Burn 06 Morning Room (MODULAIR-PM2) 5 s time series over the peak "
+        '"Burn 06 Morning Room (MODULAIR-PM2) 5 s time series over the peak '
         "window. Top: the PMS5003 nephelometer bin 0 sits at the 16-bit ceiling "
         "(65535, dashed line). Middle: the OPC-N3 bin 0 (0.35-0.46 um) count is "
         "suppressed over the same window. Bottom: the 5 s peak-window span and "
         "the portal QA/QC removal interval, showing that the removal falls "
         "within the saturated, bin-0-suppressed window. The three features "
-        "coincide in time.\"\n\n"
-        "**Figure S3 (SI), modulair_5sec_bin_response_grid.png:** \"Peak-window "
+        'coincide in time."\n\n'
+        '**Figure S3 (SI), modulair_5sec_bin_response_grid.png:** "Peak-window '
         "reshaping of the OPC-N3 size distribution, shown as absolute OPC-N3 "
         "count concentration per bin (counts per 5 s) versus bin lower edge "
         "(log-log) for the pre-peak baseline (dashed) and the peak window "
@@ -1725,14 +1850,14 @@ def _write_manuscript_md(results: list[dict], summary: dict) -> None:
         "The smallest bin (0.35-0.46 um, shaded) is suppressed during the peak "
         "while the larger bins rise from a near-zero pre-fire baseline. Counts "
         "are plotted directly rather than as a peak/pre ratio because the "
-        "larger-bin pre-fire baselines are near zero.\"\n\n"
+        'larger-bin pre-fire baselines are near zero."\n\n'
         "**Figure S6 (SI), modulair_5sec_qaqc_overlap.png (demoted from main "
-        "text):** \"Duration of the 5 s peak window (solid bars where the "
+        'text):** "Duration of the 5 s peak window (solid bars where the '
         "nephelometer bin 0 saturated, hatched where defined by the fallback "
         "criterion) and of the portal QA/QC removal interval for each "
         "MODULAIR-PM burn-unit record (unit and location given in the x labels). "
         "Where a portal removal occurs it is shorter than, and falls within, the "
-        "peak window.\"\n"
+        'peak window."\n'
     )
     path = out_dir / "modulair_5sec_peak_manuscript_sentences.md"
     path.write_text(text, encoding="utf-8")
@@ -1771,9 +1896,7 @@ def main() -> None:
             pw0 = _detect_peak_window(df0, ign, gar, pac)
             if pw0["saturated"] and np.isfinite(pw0["peak_window_duration_minutes"]):
                 sat_half_widths.append(pw0["peak_window_duration_minutes"] / 2.0)
-    median_half_width = (
-        float(np.median(sat_half_widths)) if sat_half_widths else np.nan
-    )
+    median_half_width = float(np.median(sat_half_widths)) if sat_half_widths else np.nan
     print(
         f"\nMedian saturated-window half-width: "
         f"{_fmt(median_half_width)} min "

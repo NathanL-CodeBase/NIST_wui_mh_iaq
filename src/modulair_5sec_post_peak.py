@@ -911,8 +911,8 @@ def _mpl_small_multiples(results: list, fig_dir: Path) -> None:
                label="AeroTrak Ch1 (normalized)"),
         Line2D([0], [0], color=REF_LINE, lw=0.7, ls=":", label="ratio = 1"),
     ]
-    fig.legend(handles=handles, loc="upper center", ncol=2,
-               fontsize=_FS - 2, frameon=True, bbox_to_anchor=(0.5, 1.04))
+    fig.legend(handles=handles, loc="lower right", ncol=1,
+               fontsize=_FS - 2, frameon=True, bbox_to_anchor=(0.98, 0.04))
 
     save_fig(fig, fig_dir / "modulair_5sec_post_peak_smallmultiples.png")
 
@@ -937,18 +937,22 @@ def _mpl_overlay(results: list, fig_dir: Path) -> None:
         return
 
     fig, ax = plt.subplots(figsize=figsize("double", aspect=0.55))
-    cmap = plt.get_cmap("viridis", max(len(pairs), 2))
+    color = UNIT_COLOR["MODULAIR-PM2"]
+    linestyles = ["-", "--", "-.", ":", (0, (3, 1, 1, 1)), (0, (5, 2))]
     for i, rec in enumerate(pairs):
         x, y = _normalized_trace(rec["_df"]["timestamp"], rec["_df"]["bin0"],
                                  rec["t_peak_end"], rec["_t_end"])
         if x is not None:
-            ax.semilogy(x, y, color=cmap(i), lw=1.4, alpha=0.85, label=rec["burn"])
+            ls = linestyles[i % len(linestyles)]
+            burn_label = rec["burn"].replace("burn", "Burn ")
+            ax.semilogy(x, y, color=color, lw=1.4, alpha=0.85, ls=ls,
+                        label=burn_label)
 
     ax.axhline(1.0, color=REF_LINE, lw=1.0, ls="--", label="value at t_peak_end")
     ax.set_xlabel("Hours since end of peak window", fontsize=_FS)
-    ax.set_ylabel("OPC-N3 bin0 count / t_peak_end value", fontsize=_FS)
+    ax.set_ylabel("Normalized OPC-N3 bin 0 count", fontsize=_FS)
     ax.tick_params(labelsize=_FS)
-    ax.legend(fontsize=_FS - 2, ncol=1, loc="lower right")
+    ax.legend(fontsize=_FS - 2, ncol=1, loc="upper right")
 
     save_fig(fig, fig_dir / "modulair_5sec_post_peak_overlay.png")
 
@@ -982,7 +986,7 @@ def _mpl_pm25_bias(results: list, fig_dir: Path) -> None:
         print("    [mpl] no Bedroom 2 SMPS pairs for PM2.5 bias chart.")
         return
 
-    labels = [f"{d['burn']}\nPM1 / Bdrm" for d in rows]
+    labels = [d["burn"].replace("burn", "burn ") for d in rows]
     opc_r = [d["opc_ratio"] for d in rows]
     smps_r = [d["ref_ratio"] for d in rows]
     factors = [d["factor"] for d in rows]
@@ -1008,11 +1012,9 @@ def _mpl_pm25_bias(results: list, fig_dir: Path) -> None:
     ax.set_yscale("log")
     ax.set_xticks(x)
     ax.set_xticklabels(labels, fontsize=_FS - 2)
-    ax.set_ylabel("Count ratio at +2 h (vs t_peak_end)", fontsize=_FS)
-    ax.set_title("Bedroom 2: OPC-N3 small-bin vs SMPS at +2 h post-peak",
-                 fontsize=_FS)
+    ax.set_ylabel("Count ratio at +2 h", fontsize=_FS)
     ax.tick_params(labelsize=_FS - 1)
-    ax.legend(fontsize=_FS - 2, ncol=1, loc="upper right")
+    ax.legend(fontsize=_FS - 2, ncol=1, loc="upper left")
 
     save_fig(fig, fig_dir / "modulair_5sec_pm25_bias.png")
 

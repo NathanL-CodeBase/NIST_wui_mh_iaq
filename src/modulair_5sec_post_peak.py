@@ -937,15 +937,20 @@ def _mpl_overlay(results: list, fig_dir: Path) -> None:
         return
 
     fig, ax = plt.subplots(figsize=figsize("double", aspect=0.55))
-    color = UNIT_COLOR["MODULAIR-PM2"]
-    linestyles = ["-", "--", "-.", ":", (0, (3, 1, 1, 1)), (0, (5, 2))]
+    # Sequential single-hue palette: light salmon -> full Morning Room vermillion.
+    # Provides per-burn distinguishability while staying within the unit color family.
+    n = max(len(pairs), 2)
+    base_rgb = matplotlib.colors.to_rgb(UNIT_COLOR["MODULAIR-PM2"])
+    shades = [
+        tuple(1.0 - (1.0 - c) * (0.25 + 0.75 * i / (n - 1)) for c in base_rgb)
+        for i in range(n)
+    ]
     for i, rec in enumerate(pairs):
         x, y = _normalized_trace(rec["_df"]["timestamp"], rec["_df"]["bin0"],
                                  rec["t_peak_end"], rec["_t_end"])
         if x is not None:
-            ls = linestyles[i % len(linestyles)]
             burn_label = rec["burn"].replace("burn", "Burn ")
-            ax.semilogy(x, y, color=color, lw=1.4, alpha=0.85, ls=ls,
+            ax.semilogy(x, y, color=shades[i], lw=1.4, alpha=0.95,
                         label=burn_label)
 
     ax.axhline(1.0, color=REF_LINE, lw=1.0, ls="--", label="value at t_peak_end")

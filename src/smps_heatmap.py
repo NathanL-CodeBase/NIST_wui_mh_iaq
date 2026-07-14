@@ -594,13 +594,14 @@ def save_est_png(data_for_plot, time_hours, size_bins, description, data_type,
     th = np.asarray(time_hours, dtype=float)
     sb = np.asarray(size_bins, dtype=float)
 
-    # Restrict to the burn window (garage-close -1 h to decay-end +0.5 h) so the
-    # before/after contrast is legible instead of the full 24 h day.
+    # Restrict to the burn window: ~1 h before garage close through ~3.5 h after
+    # the decay-fit end, so the recovery period after the event is visible
+    # instead of only the first half hour.
     gc = events.get("garage_closed") if events else None
     d1 = decay_window[1] if decay_window else None
     if gc is not None:
         x_lo = gc - 1.0
-        x_hi = (d1 + 0.5) if d1 is not None else gc + 2.0
+        x_hi = (d1 + 3.5) if d1 is not None else gc + 4.0
         mask = (th >= x_lo) & (th <= x_hi)
         if mask.sum() >= 2:
             th = th[mask]
@@ -627,8 +628,20 @@ def save_est_png(data_for_plot, time_hours, size_bins, description, data_type,
 
     t_edges = _edges(th)
     s_edges = _edges(sb)
+
+    # Clip the color range so the empty low tail stops flattening the palette
+    # while keeping the loaded event range legible. Number concentration uses a
+    # fixed log10 window of -2 to 3.5; mass keeps the data-driven range.
+    if data_type == "numConc":
+        vmin = -2.0
+        vmax = 3.5
+    else:
+        vmin = float(np.nanmin(data)) if np.any(np.isfinite(data)) else 0.0
+        vmax = float(np.nanmax(data)) if np.any(np.isfinite(data)) else vmin + 1.0
+
     mesh = ax.pcolormesh(
-        t_edges, s_edges, np.ma.masked_invalid(data), cmap="turbo", shading="auto"
+        t_edges, s_edges, np.ma.masked_invalid(data), cmap="turbo",
+        shading="auto", vmin=vmin, vmax=vmax,
     )
     ax.set_yscale("log")
     ax.set_ylim(min_size, max_size)
@@ -642,37 +655,53 @@ def save_est_png(data_for_plot, time_hours, size_bins, description, data_type,
     ax.set_yticks([10, 20, 50, 100, 200, 400])
     ax.yaxis.set_major_formatter(mticker.FixedFormatter([str(t) for t in [10, 20, 50, 100, 200, 400]]))
 
-    # Pre-PAC (garage->PAC) and post-PAC (decay window) shading.
+    # Pre-PAC (garage->PAC) and post-PAC (decay window) shading. Labels are
+    # rotated 90 deg, centered across each band and anchored near the bottom of
+    # the panel so the narrow pre-PAC band does not overlap the post-PAC label.
     if events is not None:
         pac = events.get("cr_box_on")
+        y_lab = min_size * 1.15  # label height near the panel floor (log axis)
         if gc is not None and pac is not None and pac > gc:
-            ax.axvspan(gc, pac, color="#999999", alpha=0.20, zorder=1)
+            ax.axvspan(gc, pac, color="#999999", alpha=0.35, zorder=1)
+            ax.text((gc + pac) / 2.0, y_lab, "Pre-PAC", ha="center", va="bottom",
+                    rotation=90, fontsize=8, fontweight="bold", color="black",
+                    zorder=6,
+                    bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none",
+                              alpha=0.7))
         if decay_window is not None:
             d0, d1w = decay_window
             if d0 is not None and d1w is not None and d1w > d0:
-                ax.axvspan(d0, d1w, color=OKABE_ITO["blue"], alpha=0.15, zorder=1)
+                ax.axvspan(d0, d1w, color=OKABE_ITO["blue"], alpha=0.28, zorder=1)
+                ax.text((d0 + d1w) / 2.0, y_lab, "Post-PAC decay",
+                        ha="center", va="bottom", rotation=90, fontsize=8,
+                        fontweight="bold", color="black", zorder=6,
+                        bbox=dict(boxstyle="round,pad=0.15", fc="white",
+                                  ec="none", alpha=0.7))
 
-    # GMD overlay, aligned to the (possibly trimmed) time axis.
+    # GMD overlay, aligned to the (possibly trimmed) time axis. Drawn in a
+    # distinct color (Okabe-Ito sky blue) so it never blends with the black
+    # event lines.
     if gmd_trace is not None:
         g_full = np.asarray(gmd_trace, dtype=float)
         t_full = np.asarray(time_hours, dtype=float)
         gm_mask = (t_full >= th[0]) & (t_full <= th[-1]) & np.isfinite(g_full)
         if gm_mask.any():
-            ax.plot(t_full[gm_mask], g_full[gm_mask], color="black", linewidth=1.6,
-                    label="Geometric mean diameter")
+            ax.plot(t_full[gm_mask], g_full[gm_mask], color=OKABE_ITO["skyblue"],
+                    linewidth=2.2, label="Geometric mean diameter", zorder=5)
 
-    # Event lines.
+    # Event lines: all black, same width, distinguished only by line style.
     if events is not None:
-        for key, color, style, elabel in [
-            ("ignition", OKABE_ITO["orange"], ":", "Ignition"),
-            ("garage_closed", "black", "-", "Garage closed"),
-            ("cr_box_on", OKABE_ITO["vermillion"], "--", "CR Box on"),
+        for key, style, elabel in [
+            ("ignition", ":", "Ignition"),
+            ("garage_closed", "-", "Garage closed"),
+            ("cr_box_on", "--", "CR Box on"),
         ]:
             hh = events.get(key)
             if hh is not None and th[0] <= hh <= th[-1]:
-                ax.axvline(hh, color=color, linestyle=style, linewidth=1.4, label=elabel)
+                ax.axvline(hh, color="black", linestyle=style, linewidth=1.6,
+                           label=elabel, zorder=4)
 
-    ax.legend(fontsize=9, loc="upper right", framealpha=0.85)
+    ax.legend(fontsize=9, loc="lower right", framealpha=0.85)
 
     output_dir = get_common_file("output_figures")
     output_dir.mkdir(parents=True, exist_ok=True)

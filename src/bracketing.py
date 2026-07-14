@@ -705,6 +705,11 @@ def _fig_burn09_bars(example: dict, fig_dir: Path) -> None:
     x_hi = max(all_vals) * 4.0
     ax.set_xlim(x_lo, x_hi)
 
+    # All correction-factor notes are centered on the geometric midpoint of the
+    # log x-range (the visual center of the axes), so they stack in a single
+    # column and never run off either side regardless of each bar's value.
+    note_x_center = np.sqrt(x_lo * x_hi)
+
     for y, (label, raw, lo, hi, color, note) in zip(y_positions, bars):
         has_band = not (np.isnan(lo) or np.isnan(hi))
         if has_band:
@@ -722,12 +727,11 @@ def _fig_burn09_bars(example: dict, fig_dir: Path) -> None:
             xy=(raw, y), xytext=(0, -11), textcoords="offset points",
             ha="center", va="top", fontsize=_FS - 3, color=color,
         )
-        # Correction-factor note above the band/point, clear of the markers and
-        # of any dashed bracket lines.
-        note_x = hi if has_band else raw
+        # Correction-factor note centered on the shared x-axis midpoint, above
+        # the band/point so it clears the markers and any dashed bracket lines.
         ax.annotate(
             note,
-            xy=(note_x, y), xytext=(0, 12), textcoords="offset points",
+            xy=(note_x_center, y), xytext=(0, 12), textcoords="offset points",
             ha="center", va="bottom", fontsize=_FS - 3, color="black",
         )
 

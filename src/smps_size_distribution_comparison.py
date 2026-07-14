@@ -250,9 +250,7 @@ def parse_wui_xlsx_timed(filepath):
     df = pd.read_excel(filepath, sheet_name="all_data", header=0)
     df.columns = [c.strip() if isinstance(c, str) else c for c in df.columns]
 
-    total_col = next(
-        c for c in df.columns if isinstance(c, str) and "Total" in c and "Conc" in c
-    )
+    total_col = next(c for c in df.columns if isinstance(c, str) and "Total" in c and "Conc" in c)
     total_conc = pd.to_numeric(df[total_col], errors="coerce").fillna(0.0).values
 
     bin_cols = [c for c in df.columns if not isinstance(c, str) and float(c) > 0]
@@ -262,9 +260,7 @@ def parse_wui_xlsx_timed(filepath):
     # The "Date" cell can carry a spurious 00:00:00 time component; take only
     # the date part before combining with the scan Start Time.
     date_part = df["Date"].astype(str).str.split(" ").str[0]
-    times = pd.to_datetime(
-        date_part + " " + df["Start Time"].astype(str), errors="coerce"
-    )
+    times = pd.to_datetime(date_part + " " + df["Start Time"].astype(str), errors="coerce")
 
     return diameters, data, total_conc, times
 
@@ -293,11 +289,7 @@ def _burn_event_times(burn_date, burn_log):
 
     garage = pd.Timestamp.combine(d, pd.to_datetime(str(row["garage closed"])).time())
     pac_raw = row["CR Box on"]
-    pac = (
-        None
-        if pd.isna(pac_raw)
-        else pd.Timestamp.combine(d, pd.to_datetime(str(pac_raw)).time())
-    )
+    pac = None if pd.isna(pac_raw) else pd.Timestamp.combine(d, pd.to_datetime(str(pac_raw)).time())
     return garage, pac
 
 
@@ -326,8 +318,7 @@ def _decay_fit_window(burn_date, burn_log, band="Total Concentration (µg/m³)")
     xlsx = get_common_file("burn_calcs") / "SMPS_decay_and_CADR.xlsx"
     if not xlsx.exists():
         sys.exit(
-            f"Not found: {xlsx}\n"
-            "Run clean_air_delivery_rates_pmsizes.py with dataset='SMPS' first."
+            f"Not found: {xlsx}\nRun clean_air_delivery_rates_pmsizes.py with dataset='SMPS' first."
         )
     decay = pd.read_excel(xlsx)
 
@@ -479,39 +470,49 @@ def plot_pre_post_pac_spectra(burn_date="2024-05-31", data_type="numConc"):
     _band_guides(ax_abs)
     ax_abs.plot(diameters, pre_spec, color=c_pre, linewidth=1.8, label="Pre-PAC")
     ax_abs.plot(
-        diameters, post_spec, color=c_post, linewidth=1.8, linestyle="--",
+        diameters,
+        post_spec,
+        color=c_post,
+        linewidth=1.8,
+        linestyle="--",
         label="Post-PAC",
     )
     ax_abs.set_xscale("log")
     ax_abs.set_xlim(9, 437)
     ax_abs.set_xlabel("Particle diameter (nm)")
     ax_abs.set_ylabel(r"d$N$/d$\log D_\mathrm{p}$ (#/cm³)")
+    ax_abs.set_ylim(0, 2600)
     ax_abs.set_title("(a) Averaged spectra")
-    ax_abs.legend(frameon=True, framealpha=0.9, edgecolor="0.7", loc="upper right")
     ax_abs.text(
-        0.03, 0.97,
+        0.03,
+        0.97,
         f"Pre: GMD {gmd_pre:.0f} nm, GSD {gsd_pre:.2f}\n"
         f"Post: GMD {gmd_post:.0f} nm, GSD {gsd_post:.2f}",
-        transform=ax_abs.transAxes, va="top", ha="left", fontsize=10,
+        transform=ax_abs.transAxes,
+        va="top",
+        ha="left",
+        fontsize=10,
         bbox=dict(boxstyle="round", facecolor="white", edgecolor="0.7", alpha=0.9),
     )
 
     # Panel 2: peak-normalized overlay (shape change).
     _band_guides(ax_norm)
+    ax_norm.plot(diameters, peak_normalize(pre_spec), color=c_pre, linewidth=1.8, label="Pre-PAC")
     ax_norm.plot(
-        diameters, peak_normalize(pre_spec), color=c_pre, linewidth=1.8, label="Pre-PAC"
-    )
-    ax_norm.plot(
-        diameters, peak_normalize(post_spec), color=c_post, linewidth=1.8,
-        linestyle="--", label="Post-PAC",
+        diameters,
+        peak_normalize(post_spec),
+        color=c_post,
+        linewidth=1.8,
+        linestyle="--",
+        label="Post-PAC",
     )
     ax_norm.set_xscale("log")
     ax_norm.set_xlim(9, 437)
-    ax_norm.set_ylim(0, 1.08)
+    ax_norm.set_ylim(0, 1.2)
     ax_norm.set_xlabel("Particle diameter (nm)")
     ax_norm.set_ylabel(r"Normalized d$N$/d$\log D_\mathrm{p}$ (–)")
     ax_norm.set_title("(b) Peak-normalized")
-    ax_norm.legend(frameon=True, framealpha=0.9, edgecolor="0.7", loc="upper right")
+    ax_norm.legend(frameon=True, framealpha=0.9, edgecolor="0.7", loc="upper left")
 
     for ax in (ax_abs, ax_norm):
         ticks = [10, 20, 50, 100, 200, 400]
@@ -651,7 +652,7 @@ for lbl in ax.get_xticklabels() + ax.get_yticklabels():
 
 legend = ax.legend(
     fontsize=TC["legend_font_size"],
-    loc='lower right',
+    loc="lower right",
     frameon=True,
     framealpha=0.9,
     edgecolor="0.7",

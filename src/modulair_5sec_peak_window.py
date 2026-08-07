@@ -23,7 +23,6 @@ Outputs (under common_folders quantaq_analysis / quantaq_figures):
     modulair_5sec_bin_response_grid.png           (matplotlib, SI)
     modulair_5sec_qaqc_overlap.png                (matplotlib)
     modulair_5sec_peak_summary.md
-    modulair_5sec_peak_manuscript_sentences.md
 
 Author: Nathan Lima
 Created: 2026-06-25
@@ -1712,158 +1711,6 @@ def _write_summary_md(results: list[dict], summary: dict) -> None:
     print(f"    [MD] {path.name}")
 
 
-def _write_manuscript_md(results: list[dict], summary: dict) -> None:
-    """
-    Write the data-filled sentences for the rewritten Section 3.2.3.
-
-    All numbers are derived from the analysis; no values are invented. The
-    5 s record contradicts the prior assumption that all three smallest OPC-N3
-    bins drop together: only the smallest bin (bin 0, 0.35-0.46 um) collapses
-    during saturation, while bins 1-2 rise sharply from a near-zero pre-fire
-    baseline. The sentences below report that bin-0-specific suppression rather
-    than forcing an aggregate three-bin ratio.
-    """
-    out_dir = get_common_file("quantaq_analysis")
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    present = [r for r in results if r.get("data_present")]
-    sat = [r for r in present if r.get("saturated")]
-    n_sat = len(sat)
-    n_pairs = len(present)
-
-    plat_pm2 = summary["plateau_median_MODULAIR_PM2"]
-    plat_pm1 = summary["plateau_median_MODULAIR_PM1"]
-    ceiling = summary["neph_ceiling"]
-    pm2_near = summary.get("pm2_max_unsaturated_neph_bin0", np.nan)
-
-    s_neph = (
-        f"The PMS5003 nephelometer channel saturated at the 16-bit ceiling "
-        f"(65535) during the peak window in {n_sat} of the {n_pairs} "
-        f"MODULAIR-PM-deployed burn-unit records analysed (no MODULAIR-PM1 "
-        f"record saturated); the saturated-window plateau distribution spanned "
-        f"the ceiling closely (median {_fmt(plat_pm2, '.0f')} across the "
-        f"MODULAIR-PM2 records). The one Morning Room near-miss (burn8 "
-        f"MODULAIR-PM2) peaked at {_fmt(pm2_near, '.0f')}, just below the "
-        f"ceiling, with the 5 s record covering the peak with no data gap."
-    )
-    # bin-0 suppression over every record with a peak window (saturation or
-    # near-ceiling fallback), not just the saturated ones: burn8 MODULAIR-PM2
-    # never pinned at the ceiling yet shows the same bin-0 collapse, so its
-    # fallback window belongs in the suppression tally. n_windowed is the
-    # denominator (records that produced any peak window).
-    windowed = [r for r in present if pd.notna(r.get("t_peak_end"))]
-    n_windowed = len(windowed)
-    supp = [r for r in windowed if r.get("class_bin0") == "suppressed"]
-    n_supp = len(supp)
-    supp_ratios = np.array([r.get("ratio_bin0", np.nan) for r in supp], dtype=float)
-    supp_ratios = supp_ratios[~np.isnan(supp_ratios)]
-    med_supp_pct = float(np.median(supp_ratios) * 100) if supp_ratios.size else np.nan
-    min_supp_pct = float(np.min(supp_ratios) * 100) if supp_ratios.size else np.nan
-    max_supp_pct = float(np.max(supp_ratios) * 100) if supp_ratios.size else np.nan
-
-    qa_n_removed = summary["n_saturated_with_qaqc_removal"]
-    qa_n_sat = summary["n_saturated_qaqc"]
-    qa_nz_med = summary["qaqc_removal_nonzero_median_min"]
-    qa_nz_min = summary["qaqc_removal_nonzero_min_min"]
-    qa_nz_max = summary["qaqc_removal_nonzero_max_min"]
-
-    s_intro = (
-        "Raw 5 s data from the MODULAIR-PM instruments were obtained directly "
-        "from the on-instrument storage and characterize the OPC-N3 and PMS5003 "
-        "responses prior to QA/QC filtering."
-    )
-    s_opc = (
-        f"The smallest OPC-N3 bin (0.35-0.46 um) responded in the opposite "
-        f"direction during the same window, dropping to a median of "
-        f"{_fmt(med_supp_pct, '.0f')}% of its pre-peak baseline (range "
-        f"{_fmt(min_supp_pct, '.0f')}% to {_fmt(max_supp_pct, '.0f')}%) in "
-        f"{n_supp} of the {n_windowed} records with a peak window, while the "
-        f"next-larger OPC-N3 bins increased over the same window."
-    )
-    s_qaqc = (
-        f"The portal-delivered QA/QC product removed peak-window data in "
-        f"{qa_n_removed} of the {qa_n_sat} saturated records, for a median of "
-        f"{_fmt(qa_nz_med, '.0f')} minutes among those records (range "
-        f"{_fmt(qa_nz_min, '.0f')} to {_fmt(qa_nz_max, '.0f')} minutes); where a "
-        f"removal occurred it coincided with the period in which the "
-        f"nephelometer was saturated and the smallest OPC-N3 bin was suppressed."
-    )
-
-    para = (
-        f"Raw 5 s data from the MODULAIR-PM instruments, retrieved from "
-        f"on-instrument storage prior to QA/QC filtering, resolve the "
-        f"sub-minute instrument behavior during the smoke peak. In "
-        f"{n_sat} of the {n_pairs} burn-unit records analysed, the PMS5003 "
-        f"nephelometer bin 0 saturated at the 16-bit ceiling (65535; no "
-        f"MODULAIR-PM1 record saturated, median saturated-window value "
-        f"{_fmt(plat_pm2, '.0f')} across the MODULAIR-PM2 records); the value "
-        f"sat at that ceiling rather than tracking concentration, as a clipped "
-        f"16-bit field would. Over the same window the OPC-N3 response was "
-        f"bin-dependent: the smallest bin (0.35-0.46 um) collapsed to a median "
-        f"of {_fmt(med_supp_pct, '.0f')}% of its pre-peak baseline in "
-        f"{n_supp} of the {n_windowed} records with a peak window, while the "
-        f"next-larger bins rose from a near-zero pre-fire baseline (their "
-        f"peak/pre ratios are not reported because that near-zero denominator "
-        f"makes the ratio meaningless; the increase is documented by the "
-        f"absolute peak counts in the per-pair table instead). The "
-        f"portal-delivered QA/QC product removed peak-window data in "
-        f"{qa_n_removed} of the {qa_n_sat} saturated records (a median of "
-        f"{_fmt(qa_nz_med, '.0f')} minutes where a removal occurred, range "
-        f"{_fmt(qa_nz_min, '.0f')} to {_fmt(qa_nz_max, '.0f')}), and where it "
-        f"did, the removal coincided with the period in which the nephelometer "
-        f"was saturated and the smallest OPC-N3 bin was suppressed. These "
-        f"features were co-located in time with the AeroTrak Ch1 reversal "
-        f"documented in Section 3.2.2, indicating that the peak-window behavior "
-        f"is common to the optical particle instruments at the highest smoke "
-        f"concentrations. The 5 s record thus shows that the brief gap in the "
-        f"QA/QC-filtered MODULAIR-PM product coincides with a saturated "
-        f"nephelometer and a suppressed smallest OPC-N3 bin, and is not a loss "
-        f"of physical signal that simple interpolation would recover."
-    )
-
-    text = (
-        "# MODULAIR-PM 5 s - Manuscript sentences for Section 3.2.3\n\n"
-        "_All values derived from data. Replaces the prior 'raw 5 Hz data were "
-        "not accessible' text in the manuscript. Note: the on-instrument record "
-        "is logged at 5 s (0.2 Hz) cadence; the manuscript should refer to it as "
-        "5 s data, not 5 Hz._\n\n---\n\n"
-        f'**Intro sentence:** "{s_intro}"\n\n'
-        f'**Nephelometer saturation:** "{s_neph}"\n\n'
-        f'**OPC-N3 suppression:** "{s_opc}"\n\n'
-        f'**QA/QC alignment:** "{s_qaqc}"\n\n'
-        "---\n\n## Replacement paragraph (third paragraph of 3.2.3)\n\n"
-        f"{para}\n\n"
-        "---\n\n## Figure captions (reworked figures)\n\n"
-        "**Figure 2 (main text), modulair_5sec_qaqc_timeseries_burn6.png:** "
-        '"Burn 06 Morning Room (MODULAIR-PM2) 5 s time series over the peak '
-        "window. Top: the PMS5003 nephelometer bin 0 sits at the 16-bit ceiling "
-        "(65535, dashed line). Middle: the OPC-N3 bin 0 (0.35-0.46 um) count is "
-        "suppressed over the same window. Bottom: the 5 s peak-window span and "
-        "the portal QA/QC removal interval, showing that the removal falls "
-        "within the saturated, bin-0-suppressed window. The three features "
-        'coincide in time."\n\n'
-        '**Figure S3 (SI), modulair_5sec_bin_response_grid.png:** "Peak-window '
-        "reshaping of the OPC-N3 size distribution, shown as absolute OPC-N3 "
-        "count concentration per bin (counts per 5 s) versus bin lower edge "
-        "(log-log) for the pre-peak baseline (dashed) and the peak window "
-        "(solid), one panel per MODULAIR-PM burn-unit pair with a peak window. "
-        "The smallest bin (0.35-0.46 um, shaded) is suppressed during the peak "
-        "while the larger bins rise from a near-zero pre-fire baseline. Counts "
-        "are plotted directly rather than as a peak/pre ratio because the "
-        'larger-bin pre-fire baselines are near zero."\n\n'
-        "**Figure S6 (SI), modulair_5sec_qaqc_overlap.png (demoted from main "
-        'text):** "Duration of the 5 s peak window (solid bars where the '
-        "nephelometer bin 0 saturated, hatched where defined by the fallback "
-        "criterion) and of the portal QA/QC removal interval for each "
-        "MODULAIR-PM burn-unit record (unit and location given in the x labels). "
-        "Where a portal removal occurs it is shorter than, and falls within, the "
-        'peak window."\n'
-    )
-    path = out_dir / "modulair_5sec_peak_manuscript_sentences.md"
-    path.write_text(text, encoding="utf-8")
-    print(f"    [MD] {path.name}")
-
-
 # ==============================================================================
 # MAIN
 # ==============================================================================
@@ -1934,7 +1781,6 @@ def main() -> None:
 
     print("\nWriting markdown outputs...")
     _write_summary_md(results, summary)
-    _write_manuscript_md(results, summary)
 
     print("\nDone. Check quantaq_analysis/ and quantaq_figures/ for outputs.")
 

@@ -75,7 +75,8 @@
     "spatial_variation": "PATH_TO_DATA_ROOT/burn_data/spatial_variation_analysis.xlsx",
     "output_figures": "PATH_TO_DATA_ROOT/Paper_figures",
     "bracketing_analysis": "PATH_TO_DATA_ROOT/burn_data/bracketing_analysis",
-    "bracketing_figures": "PATH_TO_DATA_ROOT/Paper_figures/bracketing_figures"
+    "bracketing_figures": "PATH_TO_DATA_ROOT/Paper_figures/bracketing_figures",
+    "midas_release": "PATH_TO_DATA_ROOT/midas_release"
   },
 
   "notes": [

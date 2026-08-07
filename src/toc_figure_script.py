@@ -60,8 +60,8 @@ INSTRUMENTS_TO_PLOT = {
 # Variable to set text sizes for the plot
 # Adjust these values to control the appearance of text in the figure
 TEXT_SIZES = {
-    "xlabel": 22,  # X-axis label font size
-    "ylabel": 24,  # Y-axis label font size
+    "xlabel": 32,  # X-axis label font size
+    "ylabel": 32,  # Y-axis label font size
     "legend": 18,  # Legend font size
     "title": 18,  # Title font size (if added)
     "xticks": 18,  # X-axis tick label font size
@@ -121,9 +121,7 @@ INSTRUMENT_CONFIG = {
             "PM15 (µg/m³)",
         ],
         "datetime_column": "datetime",
-        "special_cases": {
-            "burn6": {"custom_decay_time": True, "decay_end_offset": 0.25}
-        },
+        "special_cases": {"burn6": {"custom_decay_time": True, "decay_end_offset": 0.25}},
         "display_name": "Nef+OPC1",
     },
     "MiniAMS": {
@@ -162,9 +160,7 @@ INSTRUMENT_CONFIG = {
         "process_pollutants": ["PM1 (µg/m³)", "PM2.5 (µg/m³)", "PM10 (µg/m³)"],
         "datetime_column": "timestamp_local",
         "burn_range": range(4, 11),
-        "special_cases": {
-            "burn6": {"custom_decay_time": True, "decay_end_offset": 0.25}
-        },
+        "special_cases": {"burn6": {"custom_decay_time": True, "decay_end_offset": 0.25}},
         "display_name": "Nef+OPC2B",
     },
     "QuantAQK": {
@@ -186,9 +182,7 @@ INSTRUMENT_CONFIG = {
         "time_shift": 0,
         "process_pollutants": ["Total Concentration (µg/m³)"],
         "datetime_column": "datetime",
-        "special_cases": {
-            "burn6": {"custom_decay_time": True, "decay_end_offset": 0.25}
-        },
+        "special_cases": {"burn6": {"custom_decay_time": True, "decay_end_offset": 0.25}},
         "display_name": "SMPS",
     },
 }
@@ -207,9 +201,7 @@ def create_naive_datetime(date_str, time_str):
 def apply_time_shift(df, instrument, burn_date):
     """Apply time shift based on instrument configuration"""
     time_shift = INSTRUMENT_CONFIG[instrument].get("time_shift", 0)
-    datetime_column = INSTRUMENT_CONFIG[instrument].get(
-        "datetime_column", "Date and Time"
-    )
+    datetime_column = INSTRUMENT_CONFIG[instrument].get("datetime_column", "Date and Time")
 
     df.loc[:, datetime_column] = pd.to_datetime(df[datetime_column])
     burn_date = pd.to_datetime(burn_date).date()
@@ -277,9 +269,7 @@ def process_aerotrak_data(file_path, instrument="AeroTrakB"):
             particle_size_m = particle_size * 1e-6  # Convert size from µm to m
 
             # Initialize variable for this iteration
-            new_diff_col_µg_m3 = (
-                f"PM{size_values[channel]}-{next_size_value} Diff (µg/m³)"
-            )
+            new_diff_col_µg_m3 = f"PM{size_values[channel]}-{next_size_value} Diff (µg/m³)"
 
             diff_col = f"{channel} Diff (#)"
             if diff_col in aerotrak_data.columns and volume_cm is not None:
@@ -293,17 +283,14 @@ def process_aerotrak_data(file_path, instrument="AeroTrakB"):
                 particle_mass = volume_per_particle * 1e6 * 1e6  # Convert to µg
 
                 # Create new column for mass concentration in µg/m³
-                aerotrak_data[new_diff_col_µg_m3] = (
-                    particle_counts / (volume_cm * 1e-6)
-                ) * (particle_mass)
+                aerotrak_data[new_diff_col_µg_m3] = (particle_counts / (volume_cm * 1e-6)) * (
+                    particle_mass
+                )
                 pm_columns.append(new_diff_col_µg_m3)
 
             # Handle cumulative counts for PM concentrations
             cumul_col = f"{channel} Cumul (#)"
-            if (
-                cumul_col in aerotrak_data.columns
-                and new_diff_col_µg_m3 in aerotrak_data.columns
-            ):
+            if cumul_col in aerotrak_data.columns and new_diff_col_µg_m3 in aerotrak_data.columns:
                 # Create new PM concentration column from the Diff column
                 pm_column_name = f"PM{next_size_value} (µg/m³)"
                 aerotrak_data[pm_column_name] = aerotrak_data[new_diff_col_µg_m3]
@@ -345,24 +332,18 @@ def process_aerotrak_data(file_path, instrument="AeroTrakB"):
 
     # Convert 'Date and Time' to date and filter AeroTrak data for the burn dates
     aerotrak_data["Date"] = pd.to_datetime(aerotrak_data["Date and Time"]).dt.date
-    filtered_aerotrak_data = aerotrak_data[
-        aerotrak_data["Date"].isin(burn_dates.dt.date)
-    ]
+    filtered_aerotrak_data = aerotrak_data[aerotrak_data["Date"].isin(burn_dates.dt.date)]
     filtered_aerotrak_data = filtered_aerotrak_data.copy()
 
     # Apply time shift for each burn ID in the filtered data
     for burn_id in burn_ids:
         if burn_id in burn_log["Burn ID"].values:
             burn_date = burn_log[burn_log["Burn ID"] == burn_id]["Date"].values[0]
-            filtered_aerotrak_data = apply_time_shift(
-                filtered_aerotrak_data, instrument, burn_date
-            )
+            filtered_aerotrak_data = apply_time_shift(filtered_aerotrak_data, instrument, burn_date)
 
     # Check if there's a special case for burn3 rolling average
     special_cases = INSTRUMENT_CONFIG[instrument].get("special_cases", {})
-    if "burn3" in special_cases and special_cases["burn3"].get(
-        "apply_rolling_average", False
-    ):
+    if "burn3" in special_cases and special_cases["burn3"].get("apply_rolling_average", False):
         filtered_aerotrak_data = calculate_rolling_average_burn3(filtered_aerotrak_data)
 
     return filtered_aerotrak_data
@@ -401,9 +382,7 @@ def calculate_rolling_average_burn3(data):
     data.loc[
         data["Date"] == burn3_date,
         rolling_avg_df.columns.difference(["Date", "Date and Time"]),
-    ] = rolling_avg_df[
-        rolling_avg_df.columns.difference(["Date", "Date and Time"])
-    ].values
+    ] = rolling_avg_df[rolling_avg_df.columns.difference(["Date", "Date and Time"])].values
     return data
 
 
@@ -519,10 +498,7 @@ def process_smps_data(file_path, instrument="SMPS"):
             smps_data = pd.read_excel(smps_file_path, sheet_name=0)
 
             # Transpose the data if it's not already in the right format
-            if (
-                "Date" not in smps_data.columns
-                and "Start Time" not in smps_data.columns
-            ):
+            if "Date" not in smps_data.columns and "Start Time" not in smps_data.columns:
                 smps_data = smps_data.transpose()
                 smps_data.columns = smps_data.iloc[0].values
                 smps_data = smps_data.iloc[1:].reset_index(drop=True)
@@ -536,18 +512,14 @@ def process_smps_data(file_path, instrument="SMPS"):
                 "Upper Size(nm)",
             ]
 
-            missing_columns = [
-                col for col in required_columns if col not in smps_data.columns
-            ]
+            missing_columns = [col for col in required_columns if col not in smps_data.columns]
             if missing_columns:
                 continue
 
             # Rename 'Total Concentration(µg/m³)' to 'Total Concentration (µg/m³)' to add space
             if "Total Concentration(µg/m³)" in smps_data.columns:
                 smps_data = smps_data.rename(
-                    columns={
-                        "Total Concentration(µg/m³)": "Total Concentration (µg/m³)"
-                    }
+                    columns={"Total Concentration(µg/m³)": "Total Concentration (µg/m³)"}
                 )
 
             # Get the minimum and maximum size boundaries
@@ -569,9 +541,7 @@ def process_smps_data(file_path, instrument="SMPS"):
             # Create bin ranges if not already defined
             if not bin_ranges:
                 bin_ranges = [(min_size, 100), (100, 200), (200, 300), (300, max_size)]
-                bin_columns = [
-                    f"Æ©{int(start)}-{int(end)}nm (µg/m³)" for start, end in bin_ranges
-                ]
+                bin_columns = [f"Æ©{int(start)}-{int(end)}nm (µg/m³)" for start, end in bin_ranges]
                 INSTRUMENT_CONFIG["SMPS"]["process_pollutants"] = bin_columns + [
                     "Total Concentration (µg/m³)"
                 ]
@@ -594,9 +564,7 @@ def process_smps_data(file_path, instrument="SMPS"):
                 date_series = pd.to_datetime(smps_data["Date"], errors="coerce")
                 time_series = pd.to_datetime(smps_data["Start Time"], errors="coerce")
                 smps_data["datetime"] = pd.to_datetime(
-                    date_series.dt.strftime("%Y-%m-%d")
-                    + " "
-                    + time_series.dt.strftime("%H:%M:%S"),
+                    date_series.dt.strftime("%Y-%m-%d") + " " + time_series.dt.strftime("%H:%M:%S"),
                     errors="coerce",
                 )
             except (ValueError, TypeError, KeyError, AttributeError):
@@ -617,8 +585,7 @@ def process_smps_data(file_path, instrument="SMPS"):
                 smps_data["mid_datetime"] = pd.to_datetime(
                     smps_data.apply(
                         lambda row: (
-                            row["datetime"]
-                            + (row["next_datetime"] - row["datetime"]) / 2
+                            row["datetime"] + (row["next_datetime"] - row["datetime"]) / 2
                             if pd.notna(row["next_datetime"])
                             else row["datetime"]
                         ),
@@ -629,9 +596,7 @@ def process_smps_data(file_path, instrument="SMPS"):
             except (ValueError, TypeError, KeyError, AttributeError):
                 pass
 
-            smps_data = smps_data.drop(
-                ["next_datetime", "mid_datetime"], axis=1, errors="ignore"
-            )
+            smps_data = smps_data.drop(["next_datetime", "mid_datetime"], axis=1, errors="ignore")
 
             # Get numeric columns (size bins)
             known_non_numeric = [
@@ -669,9 +634,7 @@ def process_smps_data(file_path, instrument="SMPS"):
             # Sum columns within each bin range
             for i, (start, end) in enumerate(bin_ranges):
                 try:
-                    bin_cols = [
-                        col for col in numeric_cols if start <= float(col) <= end
-                    ]
+                    bin_cols = [col for col in numeric_cols if start <= float(col) <= end]
                 except (ValueError, TypeError):
                     bin_cols = []
 
@@ -681,9 +644,7 @@ def process_smps_data(file_path, instrument="SMPS"):
                     try:
                         numeric_data = {}
                         for col in bin_cols:
-                            numeric_data[col] = pd.to_numeric(
-                                smps_data[col], errors="coerce"
-                            )
+                            numeric_data[col] = pd.to_numeric(smps_data[col], errors="coerce")
                         new_data[bin_name] = pd.DataFrame(numeric_data).sum(axis=1)
                     except (ValueError, TypeError, KeyError, AttributeError):
                         new_data[bin_name] = pd.Series(np.nan, index=smps_data.index)
@@ -701,9 +662,7 @@ def process_smps_data(file_path, instrument="SMPS"):
                         "datetime": datetime_col,
                         "Date": datetime_col.dt.date,
                         "burn_id": burn_id,
-                        "Total Concentration (µg/m³)": smps_data[
-                            "Total Concentration (µg/m³)"
-                        ],
+                        "Total Concentration (µg/m³)": smps_data["Total Concentration (µg/m³)"],
                     }
                 )
 
@@ -718,22 +677,16 @@ def process_smps_data(file_path, instrument="SMPS"):
                     result_df["datetime"] += pd.Timedelta(minutes=time_shift)
 
                 # Make sure data types are consistent
-                result_df["datetime"] = pd.to_datetime(
-                    result_df["datetime"], errors="coerce"
-                )
+                result_df["datetime"] = pd.to_datetime(result_df["datetime"], errors="coerce")
                 result_df["Total Concentration (µg/m³)"] = pd.to_numeric(
                     result_df["Total Concentration (µg/m³)"], errors="coerce"
                 )
 
                 for bin_name in bin_columns:
                     if bin_name in result_df:
-                        result_df[bin_name] = pd.to_numeric(
-                            result_df[bin_name], errors="coerce"
-                        )
+                        result_df[bin_name] = pd.to_numeric(result_df[bin_name], errors="coerce")
 
-                combined_smps_data = pd.concat(
-                    [combined_smps_data, result_df], ignore_index=True
-                )
+                combined_smps_data = pd.concat([combined_smps_data, result_df], ignore_index=True)
 
         except Exception as e:  # pylint: disable=broad-exception-caught
             print(f"Error processing SMPS file for date {burn_date}: {str(e)}")
@@ -743,16 +696,12 @@ def process_smps_data(file_path, instrument="SMPS"):
         combined_smps_data = combined_smps_data.replace([np.inf, -np.inf], np.nan)
 
         concentration_cols = ["Total Concentration (µg/m³)"] + bin_columns
-        existing_cols = [
-            col for col in concentration_cols if col in combined_smps_data.columns
-        ]
+        existing_cols = [col for col in concentration_cols if col in combined_smps_data.columns]
 
         if existing_cols:
             na_rows = combined_smps_data[existing_cols].isna().all(axis=1).sum()
             if na_rows > 0:
-                combined_smps_data = combined_smps_data.dropna(
-                    subset=existing_cols, how="all"
-                )
+                combined_smps_data = combined_smps_data.dropna(subset=existing_cols, how="all")
 
     return combined_smps_data
 
@@ -822,9 +771,7 @@ def get_pm25_equivalent_pollutant(instrument):
         return "PM2.5 (µg/m³)"  # Use PM2.5 for others
 
 
-def create_toc_figure(
-    burn_to_plot=BURN_TO_PLOT, instruments_to_plot=None, text_sizes=None
-):
+def create_toc_figure(burn_to_plot=BURN_TO_PLOT, instruments_to_plot=None, text_sizes=None):
     """Create high-quality TOC figure for a single burn
     Parameters:
     -----------
@@ -929,9 +876,7 @@ def create_toc_figure(
                 continue
 
             # Filter data for the specific burn
-            burn_data = processed_data[
-                processed_data["Date"] == burn_date.date()
-            ].copy()
+            burn_data = processed_data[processed_data["Date"] == burn_date.date()].copy()
             if burn_data.empty:
                 continue
 
@@ -941,10 +886,7 @@ def create_toc_figure(
 
             # Make sure both datetime objects are timezone-naive
             burn_datetime = burn_data[datetime_column]
-            if (
-                hasattr(burn_datetime.dtype, "tz")
-                and burn_datetime.dtype.tz is not None
-            ):
+            if hasattr(burn_datetime.dtype, "tz") and burn_datetime.dtype.tz is not None:
                 burn_datetime = burn_datetime.dt.tz_localize(None)
 
             burn_data["Time Since Garage Closed (hours)"] = (
@@ -972,7 +914,7 @@ def create_toc_figure(
                 time_filtered_data["Time Since Garage Closed (hours)"],
                 time_filtered_data[pollutant],
                 label=display_name,
-                linewidth=2,
+                linewidth=4,
                 linestyle=linestyle,
                 color=colors[color_idx % len(colors)],
             )
@@ -984,38 +926,16 @@ def create_toc_figure(
             print(f"Error plotting {instrument}: {str(e)}")
             continue
 
-    # Add vertical line for garage closed (at time 0)
-    ax.axvline(x=0, color="blue", linewidth=3, linestyle="--", label="Garage Closed")
-
-    # Add vertical line for CR Box On
-    cr_box_on_time_str = burn_row["CR Box on"].iloc[0]
-    if pd.notna(cr_box_on_time_str):
-        cr_box_on_time = create_naive_datetime(burn_date.date(), cr_box_on_time_str)
-        if pd.notna(cr_box_on_time) and pd.notna(garage_closed_time):
-            time_delta = cr_box_on_time - garage_closed_time
-            if hasattr(time_delta, "total_seconds"):
-                cr_box_on_time_since_garage_closed = time_delta.total_seconds() / 3600
-                ax.axvline(
-                    x=cr_box_on_time_since_garage_closed,
-                    color="blue",
-                    linewidth=3,
-                    linestyle="--",
-                    label="CR Box on",
-                )
-
     # Set axis properties
-    ax.set_xlabel("Time Since Garage Closed (hours)", fontsize=text_sizes["xlabel"])
-    ax.set_ylabel("PM Concentration (µg/m³)", fontsize=text_sizes["ylabel"])
+    ax.set_xlabel("Time", fontsize=text_sizes["xlabel"])
+    ax.set_ylabel("Concentration", fontsize=text_sizes["ylabel"])
     ax.set_yscale("log")
-    ax.set_xlim(-1, 3)
-    ax.set_ylim(10**-2, 10**5)
+    ax.set_xlim(-1, 2)
+    ax.set_ylim(10**-2, 10**4)
 
-    # Set tick label font sizes
-    ax.tick_params(axis="x", labelsize=text_sizes.get("xticks", 12))
-    ax.tick_params(axis="y", labelsize=text_sizes.get("yticks", 12))
-
-    # Customize legend
-    ax.legend(loc="upper right", fontsize=text_sizes["legend"], framealpha=0.8)
+    # Remove x and y axis tick labels
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
 
     # Adjust layout to prevent label cutoff
     plt.tight_layout()
@@ -1023,14 +943,10 @@ def create_toc_figure(
     # Save plot as PNG with transparent background
     os.makedirs(str(get_common_file("output_figures")), exist_ok=True)
     png_filename = f"./Paper_figures/{burn_to_plot}_TOC_figure.png"
-    plt.savefig(
-        png_filename, format="png", dpi=dpi, transparent=True, bbox_inches="tight"
-    )
+    plt.savefig(png_filename, format="png", dpi=dpi, transparent=True, bbox_inches="tight")
 
     print(f"TOC figure saved to {png_filename}")
-    print(
-        f"Figure dimensions: {fig_width_inches * dpi:.0f}px × {fig_height_inches * dpi:.0f}px"
-    )
+    print(f"Figure dimensions: {fig_width_inches * dpi:.0f}px × {fig_height_inches * dpi:.0f}px")
 
     plt.close()
 

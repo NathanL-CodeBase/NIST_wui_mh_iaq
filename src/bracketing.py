@@ -34,7 +34,6 @@ Outputs:
     bracketing_analysis/bracketing_cross_burn_summary.csv
     bracketing_analysis/bracketing_burn09_sensitivity.csv
     bracketing_analysis/bracketing_summary.md
-    bracketing_analysis/bracketing_manuscript_sentences.md
     bracketing_figures/bracketing_burn09_morning_room.png
     bracketing_figures/bracketing_cross_burn.png
 
@@ -901,150 +900,6 @@ def _write_summary_md(df: pd.DataFrame, summary: dict, out_dir: Path) -> None:
     print(f"    [MD] {path.name}")
 
 
-def _write_manuscript_md(df: pd.DataFrame, summary: dict, example: dict, out_dir: Path) -> None:
-    """Write bracketing_manuscript_sentences.md (Sentences 1-4 plus inversion)."""
-    n = summary["n_pairs"]
-
-    s1 = (
-        f"Applying a particle density correction of 1.2 to 1.5 relative to unit "
-        f"density to the AeroTrak2 PM3 reading of approximately "
-        f"{_fmt(example['aerotrak_pm3_ug'])} ug/m3 yields a corrected "
-        f"lower-bound estimate of approximately {_fmt(example['mass_lower_low'])} "
-        f"ug/m3 to {_fmt(example['mass_lower_high'])} ug/m3; because the AeroTrak "
-        f"Ch1 channel was in reversal during this peak interval, the true value "
-        f"is likely higher than this estimate by an unknown factor."
-    )
-    s2 = (
-        f"Applying the literature range of biomass-smoke DustTrak correction "
-        f"factors (1.6 to 4) to the DustTrak reading of approximately "
-        f"{_fmt(example['dusttrak_ug'])} ug/m3 yields a corrected upper-bound "
-        f"estimate of approximately {_fmt(example['mass_upper_low'])} ug/m3 to "
-        f"{_fmt(example['mass_upper_high'])} ug/m3."
-    )
-    s3 = (
-        f"The corrected bracket spans a factor of approximately "
-        f"{_fmt(example['spread_corrected'], '.2g')}, compared to an uncorrected "
-        f"instrument spread of a factor of approximately "
-        f"{_fmt(example['spread_uncorrected'], '.2g')}."
-    )
-
-    # Conclusion clause for Sentence 4.
-    sc_med = summary["spread_corrected_median"]
-    su_med = summary["spread_uncorrected_median"]
-    if not np.isnan(sc_med) and not np.isnan(su_med):
-        if sc_med < 0.9 * su_med:
-            rel = "smaller than"
-            verdict = (
-                "the correction narrows the inter-instrument disagreement, so "
-                "the bracketing approach adds explanatory value relative to "
-                "reporting the raw instrument spread"
-            )
-        elif sc_med > 1.1 * su_med:
-            rel = "larger than"
-            verdict = (
-                "the correction does not narrow the disagreement, so the "
-                "bracketing approach does not add explanatory value beyond the "
-                "raw instrument spread for these burns"
-            )
-        else:
-            rel = "similar to"
-            verdict = (
-                "the correction leaves the disagreement broadly unchanged, so "
-                "the bracketing approach mainly reframes rather than narrows the "
-                "raw instrument spread"
-            )
-    else:
-        rel = "comparable to"
-        verdict = "the comparison is inconclusive given missing data"
-
-    s4 = (
-        f"Across the {n} qualifying burn-location pairs, the corrected spread "
-        f"ranged from {_fmt(summary['spread_corrected_min'], '.2g')} to "
-        f"{_fmt(summary['spread_corrected_max'], '.2g')} "
-        f"(median {_fmt(sc_med, '.2g')}), {rel} the uncorrected spread range of "
-        f"{_fmt(summary['spread_uncorrected_min'], '.2g')} to "
-        f"{_fmt(summary['spread_uncorrected_max'], '.2g')} "
-        f"(median {_fmt(su_med, '.2g')}); {verdict}."
-    )
-
-    # Sentence acknowledging where the PM2.5-only cross-checks (PurpleAir
-    # corrected mid-range, MODULAIR portal PM2.5) fall relative to the bracket.
-    # Both are reported only when they sit below the corrected lower bound, which
-    # is the expected behavior here: the AeroTrak Ch1 reversal means the true
-    # lower bound is higher than the OPC suggests, and PM2.5-only sensors miss
-    # the coarse mass captured by the DustTrak total and the AeroTrak PM3.
-    ex_lower_low = example["mass_lower_low"]
-    pa_mid_low = example["mass_mid_low"]
-    pa_mid_high = example["mass_mid_high"]
-    mod_pm25 = example["modulair_pm25_ug"]
-    mid_clause_parts = []
-    if not np.isnan(pa_mid_high):
-        mid_clause_parts.append(
-            f"the PurpleAir corrected mid-range of approximately "
-            f"{_fmt(pa_mid_low)} ug/m3 to {_fmt(pa_mid_high)} ug/m3"
-        )
-    if not np.isnan(mod_pm25):
-        mid_clause_parts.append(
-            f"the MODULAIR-PM portal PM2.5 reading of approximately "
-            f"{_fmt(mod_pm25)} ug/m3"
-        )
-    if mid_clause_parts:
-        s_mid = (
-            f"Both PM2.5-only cross-checks fell below the corrected lower bound "
-            f"of approximately {_fmt(ex_lower_low)} ug/m3 in the worked example "
-            f"({' and '.join(mid_clause_parts)}), consistent with these "
-            f"fine-mode sensors missing the coarse mass captured by the DustTrak "
-            f"total and the AeroTrak PM3 and with the AeroTrak Ch1 reversal that "
-            f"makes the true lower bound higher than the OPC count alone implies; "
-            f"the cross-checks therefore bound the fine-mode contribution rather "
-            f"than corroborating the total-mass bracket."
-        )
-    else:
-        s_mid = None
-
-    lines = [
-        "# Bracketing - manuscript sentences for Section 3.2.4",
-        "",
-        "_All values derived from data (top 10th percentile over the peak "
-        "interval). Worked example: Burn 09 Morning Room. Insert into manuscript "
-        "text._",
-        "",
-        "---",
-        "",
-        f'**Sentence 1 (lower bound, worked example):** "{s1}"',
-        "",
-        f'**Sentence 2 (upper bound, worked example):** "{s2}"',
-        "",
-        f'**Sentence 3 (spread, worked example):** "{s3}"',
-        "",
-        f'**Sentence 4 (cross-burn):** "{s4}"',
-        "",
-    ]
-
-    if s_mid is not None:
-        lines += [
-            f'**Sentence 4b (PM2.5 cross-checks below bracket):** "{s_mid}"',
-            "",
-        ]
-
-    inv = df[df["bracket_inverted"]]
-    if not inv.empty:
-        burns = ", ".join(f"{r['burn']} {r['location']}" for _, r in inv.iterrows())
-        s5 = (
-            f"In {len(inv)} of the {n} pairs ({burns}) the corrected bracket was "
-            f"inverted: the density-corrected AeroTrak lower bound exceeded the "
-            f"DustTrak-corrected upper bound, indicating that the DustTrak "
-            f"correction factor of 4 (Delp & Singer 2020, fresh wildfire smoke) "
-            f"is too aggressive for this smoke, or that the AeroTrak high-end "
-            f"density factor of 1.5 overstates the lower bound."
-        )
-        lines += [f'**Sentence 5 (inversion finding):** "{s5}"', ""]
-
-    path = out_dir / "bracketing_manuscript_sentences.md"
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"    [MD] {path.name}")
-
-
 # ==============================================================================
 # MAIN
 # ==============================================================================
@@ -1123,7 +978,6 @@ def main() -> None:
 
     print("\nWriting markdown...")
     _write_summary_md(df, summary, out_dir)
-    _write_manuscript_md(df, summary, example, out_dir)
 
     print("\nDone. Check bracketing_analysis/ and bracketing_figures/ for outputs.")
 

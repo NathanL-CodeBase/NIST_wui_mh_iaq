@@ -18,7 +18,6 @@ Outputs:
     coincidence_analysis/aerotrak_coincidence_per_burn.csv
     coincidence_analysis/aerotrak_coincidence_cross_burn_summary.csv
     coincidence_analysis/aerotrak_coincidence_summary.md
-    coincidence_analysis/aerotrak_manuscript_sentences.md
     coincidence_figures/aerotrak_coincidence_<burn>_<unit>.html  (one per pair)
     coincidence_figures/aerotrak_coincidence_small_multiples.png
     coincidence_figures/aerotrak_coincidence_overlay.png
@@ -144,14 +143,6 @@ BURN_COVERAGE = {
 
 # Burns where Bedroom 2 was sealed (flag in output; AeroTrak1 only)
 BEDROOM_SEALED_BURNS = {"burn5", "burn6"}
-
-# Worked example pinned for the manuscript (Sentence 5). Set to a
-# (burn, instrument) tuple to force the example, or None to fall back to the
-# highest peak-PM3 non-sealed reversal pair with a computable suppression.
-# Pinned to Burn 09 Morning Room to match the manuscript mass-bracketing
-# worked example; the auto-selected highest-PM3 pair (burn3 Morning Room)
-# has a near-zero reversal trough that reads poorly in prose.
-WORKED_EXAMPLE: tuple[str, str] | None = ("burn9", "AeroTrak2")
 
 # data_config.json instrument keys
 INSTR_KEY = {
@@ -1586,16 +1577,14 @@ def _write_csv(all_results: list[dict]) -> None:
 
 def _write_markdown(all_results: list[dict]) -> None:
     """
-    Write aerotrak_coincidence_summary.md and aerotrak_manuscript_sentences.md
-    to the coincidence_analysis folder.
+    Write aerotrak_coincidence_summary.md to the coincidence_analysis folder.
 
-    Prevalence, the worked example, the practical mass threshold, and the
-    timing tally are all reported over the NON-SEALED burn-instrument pairs
-    only. The two sealed Bedroom 2 burns (burn5, burn6) saw far lower indoor
-    smoke because the room was closed off, so they are not representative of
-    the high-concentration reversal phenomenon and are excluded from the
-    headline statistics. All numbers are derived from data; no values are
-    estimated from memory.
+    Prevalence, the practical mass threshold, and the timing tally are all
+    reported over the NON-SEALED burn-instrument pairs only. The two sealed
+    Bedroom 2 burns (burn5, burn6) saw far lower indoor smoke because the room
+    was closed off, so they are not representative of the high-concentration
+    reversal phenomenon and are excluded from the headline statistics. All
+    numbers are derived from data; no values are estimated from memory.
     """
     out_dir = get_common_file("coincidence_analysis")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1746,176 +1735,6 @@ def _write_markdown(all_results: list[dict]) -> None:
             "\n\n".join(parts) + "\n", encoding="utf-8"
         )
         print("    [MD] aerotrak_coincidence_summary.md")
-
-    # ── aerotrak_manuscript_sentences.md (five sentence templates) ───────────
-    # Aggregate stats
-    med_dur_s = _fmt(float(np.median(dur_arr)) if len(dur_arr) > 0 else np.nan, ".0f")
-    min_dur_s = _fmt(float(np.min(dur_arr)) if len(dur_arr) > 0 else np.nan, ".0f")
-    max_dur_s = _fmt(float(np.max(dur_arr)) if len(dur_arr) > 0 else np.nan, ".0f")
-    med_pm3_s = _fmt(float(np.median(pm3_rev_arr)) if len(pm3_rev_arr) > 0 else np.nan, ".0f")
-    min_pm3_s = _fmt(float(np.min(pm3_rev_arr)) if len(pm3_rev_arr) > 0 else np.nan, ".0f")
-    max_pm3_s = _fmt(float(np.max(pm3_rev_arr)) if len(pm3_rev_arr) > 0 else np.nan, ".0f")
-
-    min_npeak = float(np.min(n_peak_arr)) if len(n_peak_arr) > 0 else np.nan
-    max_npeak = float(np.max(n_peak_arr)) if len(n_peak_arr) > 0 else np.nan
-    med_npeak_s = float(np.median(n_peak_arr)) if len(n_peak_arr) > 0 else np.nan
-    factor_ms = med_npeak_s / COINCIDENCE_THRESHOLD_CM3 if not np.isnan(med_npeak_s) else np.nan
-    max_L_pct = float(np.max(L_arr)) * 100 if len(L_arr) > 0 else np.nan
-    min_L_pct = float(np.min(L_arr)) * 100 if len(L_arr) > 0 else np.nan
-    med_L_pct = float(np.median(L_arr)) * 100 if len(L_arr) > 0 else np.nan
-
-    n_fail_s = len(cons_fails)
-
-    # Worked example: a high-concentration reversal pair with a clear
-    # suppression. Candidates are non-sealed reversal pairs with a computable
-    # duration, a counts-NOT-conserved trough, and a valid Ch1 minimum. If
-    # WORKED_EXAMPLE pins a (burn, instrument) pair, use it; otherwise fall
-    # back to the highest peak-PM3 candidate. Selecting by peak PM3 keeps the
-    # example in the dense-smoke regime the section is about.
-    ex_cands = [
-        r
-        for r in rev
-        if "_ch_results" in r
-        and "Ch1" in r["_ch_results"]
-        and not np.isnan(r.get("n_peak_cm3", np.nan))
-        and not np.isnan(r.get("reversal_duration_minutes", np.nan))
-        and not np.isnan(r.get("peak_total_PM3_mass_ug_m3", np.nan))
-        and r.get("counts_conserved") is False
-    ]
-    ex = None
-    if WORKED_EXAMPLE is not None:
-        ex = next(
-            (
-                r
-                for r in ex_cands
-                if (r["burn"], r["instrument"]) == WORKED_EXAMPLE
-            ),
-            None,
-        )
-    if ex is None:
-        ex = (
-            max(ex_cands, key=lambda r: r["peak_total_PM3_mass_ug_m3"])
-            if ex_cands
-            else None
-        )
-
-    if ex is not None:
-        ex_burn = ex["burn"]
-        ex_loc = str(ex["location"]).replace("_", " ")
-        ex_n_pre = float(ex["n_peak_cm3"])
-        ex_n_min = float(ex["_ch_results"]["Ch1"]["n_min_during_reversal"])
-        ex_dur = float(ex["reversal_duration_minutes"])
-        ex_pm3 = float(ex["peak_total_PM3_mass_ug_m3"])
-        ex_L_pct = float(ex["L_central"]) * 100
-        ex_supp = (
-            (1.0 - ex_n_min / ex_n_pre) * 100 if not np.isnan(ex_n_min) and ex_n_pre > 0 else np.nan
-        )
-    else:
-        ex_burn = ex_loc = "[no example]"
-        ex_n_pre = ex_n_min = ex_dur = ex_pm3 = ex_L_pct = ex_supp = np.nan
-
-    n_at1_rev_s = sum(1 for r in rev if r["instrument"] == "AeroTrak1")
-    n_at2_rev_s = sum(1 for r in rev if r["instrument"] == "AeroTrak2")
-
-    s1 = (
-        f"Channel reversals in the 0.3-0.5 um bin (Ch1 count falling below 50% of "
-        f"the local maximum) were detected in all {n_rev} of the {n_total} non-sealed "
-        f"AeroTrak burn-instrument pairs analysed ({n_at1_rev_s} AeroTrak1 Bedroom 2, "
-        f"{n_at2_rev_s} AeroTrak2 Morning Room), with a median reversal duration of "
-        f"approximately {med_dur_s} minutes (range {min_dur_s} to {max_dur_s} minutes) "
-        f"and a median peak total PM3 mass concentration of approximately "
-        f"{med_pm3_s} ug/m3 at the time of the reversal."
-    )
-
-    s2 = (
-        f"At the time of each reversal, the peak Ch1 count concentration ranged from "
-        f"approximately {_fmt(min_npeak)} to {_fmt(max_npeak)} particles/cm3 "
-        f"(median {_fmt(med_npeak_s)}), a factor of approximately "
-        f"{_fmt(factor_ms, '.1f')} above the manufacturer's 10% coincidence-loss limit "
-        f"of 5,950,000 particles/ft3 (approximately "
-        f"{COINCIDENCE_THRESHOLD_CM3:.0f} particles/cm3); the Poisson dead-time model "
-        f"predicts coincidence losses of at least {_fmt(min_L_pct, '.0f')}% to "
-        f"{_fmt(max_L_pct, '.0f')}% at the measured counts (lower bounds, since the "
-        f"measured count understates the true concentration), and it caps the "
-        f"reportable count at a rollover ceiling of approximately "
-        f"{N_MEAS_CEILING_CM3:.0f} particles/cm3, near which the observed per-unit "
-        f"peaks cluster."
-    )
-
-    s3 = (
-        f"In {n_fail_s} of {n_rev} pairs where a reversal was detected, the sum of "
-        f"count concentrations across all six AeroTrak bins decreased by more than "
-        f"{CONSERVATION_TOL * 100:.0f}% at the reversal trough, consistent with the "
-        f"particle merging and dead-time losses of severe coincidence; count "
-        f"conservation across bins holds only in the mild-loss limit."
-    )
-
-    s4 = (
-        f"The reversal phenomenon was associated with dense smoke and was "
-        f"consistently observed at peak total PM3 mass concentrations exceeding "
-        f"approximately {med_pm3_s} ug/m3 (range {min_pm3_s} to {max_pm3_s} ug/m3 "
-        f"across the non-sealed pairs, the median taken as the practical caution "
-        f"threshold); OPC-derived count concentrations and mass estimates should "
-        f"be interpreted with caution at and above these levels."
-    )
-
-    s5 = (
-        f"In the {ex_burn} ({ex_loc}) event, for example, the Ch1 channel declined "
-        f"from approximately {_fmt(ex_n_pre)} particles/cm3 to a minimum of "
-        f"approximately {_fmt(ex_n_min)} particles/cm3 over approximately "
-        f"{_fmt(ex_dur, '.0f')} minutes while the co-located total PM3 mass "
-        f"concentration reached approximately {_fmt(ex_pm3, '.0f')} ug/m3; "
-        f"the Poisson coincidence loss estimated from the maximum observed Ch1 count "
-        f"is at least {_fmt(ex_L_pct, '.0f')}%, and the near-complete observed "
-        f"suppression ({_fmt(ex_supp, '.0f')}% of the local maximum) is consistent "
-        f"with the true concentration rising far beyond the rollover ceiling of "
-        f"approximately {N_MEAS_CEILING_CM3:.0f} particles/cm3, where the reported "
-        f"count falls toward zero."
-    )
-
-    s6 = (
-        f"The relative timing of the Ch1 reversal onset and the PM3 mass peak was "
-        f"determinable in {n_timing_determinable} of {n_rev} reversal pairs; the "
-        f"onset preceded the mass peak in {n_precede} and coincided with it in "
-        f"{n_at_peak}, as expected for a counter whose reported count begins "
-        f"falling once the true concentration passes the rollover ceiling while "
-        f"smoke is still accumulating; in the {n_follow} pairs where the onset "
-        f"followed the reported mass peak, the PM3 series is itself derived from "
-        f"the distorted counts, so the ordering is weakly constrained."
-    )
-
-    ms_text = (
-        "# AeroTrak Coincidence - Manuscript Sentences for Section 3.2.2\n\n"
-        "_All values derived from data and reported over the non-sealed "
-        "burn-instrument pairs. Insert into manuscript text._\n\n"
-        "---\n\n"
-        f'**Sentence 1 (reversal prevalence):** "{s1}"\n\n'
-        f'**Sentence 2 (coincidence overload test):** "{s2}"\n\n'
-        f'**Sentence 3 (counts conservation):** "{s3}"\n\n'
-        f'**Sentence 4 (practical threshold):** "{s4}"\n\n'
-        f'**Sentence 5 (worked example: {ex_burn}, {ex_loc}):** "{s5}"\n\n'
-        f'**Sentence 6 (reversal-onset timing):** "{s6}"\n\n'
-        "---\n\n"
-        "## Supporting statistics\n\n"
-        "| Quantity | Value |\n"
-        "|---|---|\n"
-        f"| Non-sealed burn-instrument pairs analysed | {n_total} |\n"
-        f"| Pairs with Ch1 reversal | {n_rev} |\n"
-        f"| Median n_peak all pairs (#/cm3) | {_fmt(med_npeak_s)} |\n"
-        f"| Median reversal duration (min) | {med_dur_s} |\n"
-        f"| Median L_central all pairs (%) | {_fmt(med_L_pct, '.1f')} |\n"
-        f"| Median peak PM3 at reversal (ug/m3) | {med_pm3_s} |\n"
-        f"| Reversal-onset timing determinable | {n_timing_determinable} of {n_rev} |\n"
-        f"| Onset preceded / at / followed mass peak | "
-        f"{n_precede} / {n_at_peak} / {n_follow} |\n"
-        f"| TSI 10% coincidence-loss limit (#/cm3) | {COINCIDENCE_THRESHOLD_CM3:.0f} |\n"
-        f"| Factor above TSI limit (median) | {_fmt(factor_ms, '.1f')} |\n"
-        f"| Poisson rollover ceiling (#/cm3) | {N_MEAS_CEILING_CM3:.0f} |\n"
-        f"| Predicted L at measured counts (min to max, %) | "
-        f"{_fmt(min_L_pct, '.0f')} to {_fmt(max_L_pct, '.0f')} |\n"
-    )
-    (out_dir / "aerotrak_manuscript_sentences.md").write_text(ms_text, encoding="utf-8")
-    print("    [MD] aerotrak_manuscript_sentences.md")
 
 
 # ==============================================================================

@@ -36,6 +36,7 @@ NIST_wui_mh_iaq/
 ├── src/                              # Core analysis scripts
 │   ├── __init__.py                   # Package initialization
 │   ├── data_paths.py                 # Portable data access via data_config.json
+│   ├── fig_style.py                  # Shared ES&T Air figure styling (Section 3.2)
 │   │
 │   │ # CADR (Clean Air Delivery Rate) Analysis
 │   ├── clean_air_delivery_rates_update.py
@@ -81,11 +82,23 @@ NIST_wui_mh_iaq/
 │   ├── smps_mass_vs_conc.py
 │   ├── smps_size_bin_barchart.py
 │   ├── smps_size_distribution_comparison.py
+│   ├── smps_decay_report.py
+│   ├── smps_reversal_crosscheck.py
 │   │
 │   │ # Data Processing & Utilities
 │   ├── remove_aerotrak_dup_data.py
 │   ├── mh_relay_control_log.py
-│   └── toc_figure_script.py          # Publication TOC figure generator
+│   ├── toc_figure_script.py          # Publication TOC figure generator
+│   │
+│   │ # Data Release (MIDAS)
+│   └── data_release/                 # Builds the public tidy-CSV PM data release
+│       ├── __init__.py
+│       ├── build_release.py          # Orchestrator: run exporters, write CSVs + manifest
+│       ├── release_config.py         # Instrument registry (single source of truth)
+│       ├── exporters.py              # Per-instrument tidy-schema exporters
+│       ├── burns.py                  # Burn-date bookkeeping and per-row burn tagging
+│       ├── writers.py                # Standard-column CSV writer (no silent overwrite)
+│       └── readme.py                 # README_dataset.md generator
 │
 ├── scripts/                          # Reusable utility modules
 │   ├── __init__.py
@@ -261,7 +274,7 @@ WUI_smoke/
 #### Instrument Comparison and Validation
 - **`dusttrak-rh_comparison.py`** — DustTrak performance and relative humidity effects
 - **`purpleair_comparison.py`** — PurpleAir sensor validation against reference instruments
-- **`quantaq_pm2_5_burn8.py`** — QuantAQ sensor analysis for specific burn experiment
+- **`quantaq_pm2.5_burn8.py`** — QuantAQ sensor analysis for specific burn experiment
 - **`general_particle_count_comparison.py`** — Cross-instrument particle count comparison
 - **`aham_ac1_comparison.py`** — AHAM AC-1 smoke concentration standard comparison with WUI measurements
 - **`temp-rh_comparison.py`** — Temperature and relative humidity correlation with PM measurements
@@ -273,12 +286,30 @@ WUI_smoke/
 - **`smps_mass_vs_conc.py`** — Mass concentration vs. number concentration analysis
 - **`smps_size_bin_barchart.py`** — CADR-per-CR-box barcharts grouped by SMPS size bins (9–100 nm, 100–200 nm, 200–300 nm, 300–437 nm) for filter count, new vs. used filter, and MERV grade comparisons
 - **`smps_size_distribution_comparison.py`** — Compares normalized dN/dlogDp distributions of WUI mixed-fuel smoke against the KCl challenge aerosol used for ASTM CADR derivation
+- **`smps_decay_report.py`** — Extracts the four coarse-band SMPS decay rates for Burn 01 (the no-filtration whole-house baseline) from the fitted `SMPS_decay_and_CADR.xlsx`, converts each first-order rate to a half-life (ln(2)/k, minutes), and writes a compact CSV for the Section 3.4 natural-decay analysis; performs no fitting itself
+- **`smps_reversal_crosscheck.py`** — Cross-checks the AeroTrak Ch1 (0.3–0.5 μm) coincidence-overload claim against the SMPS, an independent non-optical (electrical-mobility) reference; for each Bedroom 2 reversal window it compares the reported Ch1 count, the SMPS 300–437 nm number concentration, and the Poisson rollover prediction of the true concentration
 
 #### Data Processing Utilities
 - **`data_paths.py`** — Portable path resolver; reads `data_config.json` to provide machine-independent access to instrument data folders and common files without hardcoded paths
+- **`fig_style.py`** — Shared ES&T Air figure styling for the Section 3.2 instrument figures: single source of truth for matplotlib settings, column widths (single, 1.5, and double), and the colorblind-safe Okabe-Ito categorical palette used by the bracketing, MODULAIR-PM peak-window, MODULAIR-PM post-peak, AeroTrak coincidence, and SMPS reversal figures
 - **`remove_aerotrak_dup_data.py`** — Duplicate AeroTrak timestamp removal
 - **`mh_relay_control_log.py`** — HVAC relay control log processing
 - **`toc_figure_script.py`** — Publication table of contents figure generator
+
+#### Data Release (`src/data_release/`)
+Builds the public PM data release: one tidy CSV per instrument product plus a manifest and a generated dataset README, written to the MIDAS release directory. No raw data are written or committed, no artifact corrections are applied, and timestamps keep each instrument's native clock. Existing outputs are never overwritten silently; a name collision is versioned with an ISO date suffix. Run under the project environment:
+
+```bash
+CONDA_NO_PLUGINS=true conda run -n wui python -m src.data_release.build_release
+# subset with --only smps_bedroom2_number,dusttrak
+```
+
+- **`build_release.py`** — Orchestrator; runs the per-instrument exporters, writes each product CSV, and records `manifest.csv` (file, rows, date range, source folder)
+- **`release_config.py`** — Instrument registry (model, serial number, location, cadence, available burns, output filename); the single source of truth consumed by the exporters, manifest, and README generator
+- **`exporters.py`** — Per-instrument `prepare_<instrument>` functions that reshape each raw record to the shared tidy schema (datetime, burn_id, location, instrument, serial_number, then measurement columns with units in the name), reusing existing repository parsers
+- **`burns.py`** — Reads the burn log once and tags each record row with the burn it falls on; rows outside any burn day carry an empty `burn_id` so the released file keeps the full continuous record
+- **`writers.py`** — Writes each prepared DataFrame with the standard leading column order and UTF-8-with-BOM encoding (so Excel renders the micro sign), versioning any name collision with an ISO date suffix
+- **`readme.py`** — Generates `README_dataset.md` from the registry and manifest, documenting the known instrument artifacts rather than correcting them in the data
 
 #### Diagnostic and Testing Scripts (`testing/`)
 - **`diagnostic_timestamp_alignment.py`** — Examines raw AeroTrak timestamps and resampling behavior to diagnose merge failures in hourly spatial variation bins

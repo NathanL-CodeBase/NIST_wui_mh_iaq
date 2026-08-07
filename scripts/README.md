@@ -1,6 +1,6 @@
 # NIST WUI MH IAQ Utility Scripts
 
-This directory contains reusable utility modules for the NIST Wildland-Urban Interface (WUI) Mobile Home Indoor Air Quality (IAQ) analysis project.
+This directory contains reusable utility modules for the NIST Wildland-Urban Interface (WUI) Manufactured Housing Indoor Air Quality (IAQ) analysis project.
 
 ## Overview
 

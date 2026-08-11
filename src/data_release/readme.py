@@ -181,6 +181,14 @@ peak windows, producing a spurious cap near 560 ug/m3. The smallest OPC-N3 bin
 also over-reads for a few hours after each peak. The raw 5 s records recover
 both effects and carry no QA/QC removal.
 
+## Disclaimer
+
+Certain commercial equipment, instruments, software, or materials are identified in 
+this repository in order to specify the experimental and analytical procedures 
+adequately. Such identification is not intended to imply recommendation or 
+endorsement of any product or service by NIST, nor is it intended to imply that the 
+materials or equipment identified are necessarily the best available for the purpose.
+
 ## Provenance
 
 Values are released as recorded. The only edits applied are unit conversions

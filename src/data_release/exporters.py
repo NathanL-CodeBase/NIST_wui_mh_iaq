@@ -14,6 +14,7 @@ Exporters reuse existing repository parsers where they exist:
 
 Author: Nathan Lima
 Created: 2026-08-06
+Updated 2026-08-25: SI unit fixes (AeroTrak header µm, MODULAIR-PM bin units).
 """
 
 import sys
@@ -26,7 +27,7 @@ _REPO = Path(__file__).resolve().parents[2]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from src.data_paths import resolver, get_instrument_path  # noqa: E402
+from src.data_paths import get_instrument_path, resolver  # noqa: E402
 from src.data_release import release_config as rc  # noqa: E402
 from src.data_release.burns import tag_burn_id  # noqa: E402
 
@@ -67,6 +68,7 @@ def _attach_common(df: pd.DataFrame, product: dict, datetime_col: str) -> pd.Dat
 # SMPS
 # ==============================================================================
 
+
 def prepare_smps(product: dict) -> pd.DataFrame:
     """
     Build the SMPS number-concentration release frame (Bedroom 2, all burns).
@@ -106,9 +108,7 @@ def prepare_smps(product: dict) -> pd.DataFrame:
                 units = part["_units"].iloc[0]
 
     combined = pd.concat(frames, ignore_index=True)
-    combined = combined.sort_values("datetime").drop_duplicates(
-        subset="datetime", keep="first"
-    )
+    combined = combined.sort_values("datetime").drop_duplicates(subset="datetime", keep="first")
     combined = combined.drop(columns=["_units"])
 
     # Sort diameter-midpoint columns by size. A stray non-numeric diameter
@@ -130,10 +130,16 @@ def prepare_smps(product: dict) -> pd.DataFrame:
 
     meta_cols = [c for c in ["Lower Size(nm)", "Upper Size(nm)"] if c in combined.columns]
     stat_cols = [
-        c for c in [
-            "D50(nm)", "Median(nm)", "Mean(nm)", "Geo. Mean(nm)",
-            "Mode(nm)", "Geo. Std. Dev.",
-        ] if c in combined.columns
+        c
+        for c in [
+            "D50(nm)",
+            "Median(nm)",
+            "Mean(nm)",
+            "Geo. Mean(nm)",
+            "Mode(nm)",
+            "Geo. Std. Dev.",
+        ]
+        if c in combined.columns
     ]
     if units:
         combined = combined.rename(
@@ -151,6 +157,7 @@ def prepare_smps(product: dict) -> pd.DataFrame:
 # ==============================================================================
 # DUSTTRAK
 # ==============================================================================
+
 
 def prepare_dusttrak(product: dict) -> pd.DataFrame:
     """
@@ -198,6 +205,7 @@ def prepare_dusttrak(product: dict) -> pd.DataFrame:
 # AEROTRAK
 # ==============================================================================
 
+
 def prepare_aerotrak(product: dict) -> pd.DataFrame:
     """
     Build an AeroTrak count-concentration release frame for one location.
@@ -220,7 +228,7 @@ def prepare_aerotrak(product: dict) -> pd.DataFrame:
     -------
     pd.DataFrame
         datetime, leading columns, and per-channel count concentration columns
-        named by size range, e.g. 'N 0.3-0.5um (#/cm³)'.
+        named by size range, e.g. 'N 0.3-0.5 µm (#/cm³)'.
     """
     from src.aerotrak_coincidence import (
         CHANNELS,
@@ -268,7 +276,7 @@ def prepare_aerotrak(product: dict) -> pd.DataFrame:
         if diff_col not in df.columns:
             continue
         counts = pd.to_numeric(df[diff_col], errors="coerce")
-        name = f"N {lo_um:g}-{hi_um:g}um (#/cm³)"
+        name = f"N {lo_um:g}-{hi_um:g} µm (#/cm³)"
         out[name] = counts / vol_cm3
 
     return _attach_common(out, product, "datetime")
@@ -277,6 +285,14 @@ def prepare_aerotrak(product: dict) -> pd.DataFrame:
 # ==============================================================================
 # MODULAIR-PM PORTAL (1-MINUTE QA/QC PRODUCT)
 # ==============================================================================
+
+# OPC-N3 histogram bins are number concentration (#/cm³); PMS5003 nephelometer
+# bins are raw particle counts (#). Units per the MODULAIR-PM manual, applied to
+# both the portal and raw 5 s products, which share these column names.
+_MODULAIR_BIN_RENAME = {
+    **{f"bin{i}": f"bin{i} (#/cm³)" for i in range(24)},
+    **{f"neph_bin{i}": f"neph_bin{i} (#)" for i in range(6)},
+}
 
 # Portal columns released, in order: mass, OPC-N3 bins, nephelometer bins, flag.
 _PORTAL_KEEP = (
@@ -296,6 +312,7 @@ _PORTAL_RENAME = {
     "sample_rh": "sample_rh (%)",
     "sample_temp": "sample_temp (°C)",
     "sample_pres": "sample_pres (hPa)",
+    **_MODULAIR_BIN_RENAME,
 }
 
 
@@ -323,9 +340,7 @@ def prepare_modulair_portal(product: dict) -> pd.DataFrame:
     portal_dir = get_instrument_path(product["config_key"])
     matches = sorted(portal_dir.glob(f"{product['serial_number']}*.csv"))
     if not matches:
-        raise FileNotFoundError(
-            f"No portal CSV for {product['serial_number']} in {portal_dir}"
-        )
+        raise FileNotFoundError(f"No portal CSV for {product['serial_number']} in {portal_dir}")
     df = pd.read_csv(matches[0], low_memory=False)
 
     ts_col = "timestamp_local" if "timestamp_local" in df.columns else "timestamp"
@@ -351,6 +366,7 @@ def prepare_modulair_portal(product: dict) -> pd.DataFrame:
 # MODULAIR-PM RAW 5 SECOND RECORD
 # ==============================================================================
 
+
 def prepare_modulair_5s(product: dict) -> pd.DataFrame:
     """
     Build a MODULAIR-PM raw 5 s (no QA/QC) release frame for one unit.
@@ -370,7 +386,7 @@ def prepare_modulair_5s(product: dict) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        datetime, leading columns, OPC-N3 bin0-23, neph_bin0-5, flag.
+        datetime, leading columns, OPC-N3 bin0-23 (#/cm³), neph_bin0-5 (#), flag.
     """
     from src.modulair_5sec_io import (
         BURN_DATES,
@@ -409,12 +425,14 @@ def prepare_modulair_5s(product: dict) -> pd.DataFrame:
         raise FileNotFoundError(f"No raw 5 s files found for {unit}")
 
     out = pd.concat(frames, ignore_index=True)
+    out = out.rename(columns=_MODULAIR_BIN_RENAME)
     return _attach_common(out, product, "datetime")
 
 
 # ==============================================================================
 # PURPLEAIR
 # ==============================================================================
+
 
 def prepare_purpleair(product: dict) -> pd.DataFrame:
     """
@@ -449,14 +467,14 @@ def prepare_purpleair(product: dict) -> pd.DataFrame:
         b_col = next((c for c in raw.columns if c.endswith(" B")), None)
         if a_col is None or b_col is None:
             continue
-        part = pd.DataFrame({
-            "datetime": pd.to_datetime(raw["DateTime"], errors="coerce"),
-        })
+        part = pd.DataFrame(
+            {
+                "datetime": pd.to_datetime(raw["DateTime"], errors="coerce"),
+            }
+        )
         part["PM2.5 A (µg/m³)"] = pd.to_numeric(raw[a_col], errors="coerce")
         part["PM2.5 B (µg/m³)"] = pd.to_numeric(raw[b_col], errors="coerce")
-        part["PM2.5 Average (µg/m³)"] = part[
-            ["PM2.5 A (µg/m³)", "PM2.5 B (µg/m³)"]
-        ].mean(axis=1)
+        part["PM2.5 Average (µg/m³)"] = part[["PM2.5 A (µg/m³)", "PM2.5 B (µg/m³)"]].mean(axis=1)
         frames.append(part)
 
     if not frames:

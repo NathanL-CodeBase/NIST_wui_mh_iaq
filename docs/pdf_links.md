@@ -20,7 +20,4 @@ commercial instruments does not imply endorsement by NIST.
 
 - Vaisala HMP155 User Guide (temperature and RH) – https://docs.vaisala.com/r/M210912EN-J/en-US
 - Vaisala HMP45A/D User Guide (temperature and RH) – https://www.vaisala.com/sites/default/files/documents/HMP45AD-User-Guide-U274EN.pdf
-- Aranet4 PRO Product Page (CO2: Bedroom, Entry, MH Outside) – https://aranet.com/en/pro/products/aranet4-pro
-- Aranet4 PRO Data Sheet – https://assets.aranet.com/documents/Aranet_Datasheet_TDSPC003_Aranet4_PRO_1.pdf
-- Aranet4 User Manual – https://aranet.com/downloads/aranet4-user-manual
 

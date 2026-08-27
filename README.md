@@ -32,6 +32,7 @@ NIST_wui_mh_iaq/
 ├── data_config.json                  # Active configuration (gitignored)
 ├── data_config.template.json         # Configuration template
 ├── wui.yml                           # Conda environment specification
+├── pdf_links.md                     # Public download links for instrument manuals and data sheets
 │
 ├── src/                              # Core analysis scripts
 │   ├── __init__.py                   # Package initialization
@@ -397,16 +398,15 @@ where *V* is the effective room volume (m³). When two baseline burns are availa
 
 | Instrument | Model | Purpose | Burns Available |
 |-----------|-------|---------|----------------|
-| AeroTrak Bedroom | TSI AeroTrak 9510 | Optical particle counting | 1–10 |
-| AeroTrak Kitchen | TSI AeroTrak 9510 | Optical particle counting | 1–10 |
-| DustTrak | TSI DRX 8533 | Real-time aerosol monitoring | 1–10 |
-| MiniAMS | Mini Aerosol Mass Spectrometer | Chemical species analysis | 1–10 |
-| PurpleAir | PA-II-SD | Low-cost PM monitoring | 6–10 |
-| QuantAQ Bedroom | MODULAIR-PM (MOD-PM-00194) | PM monitoring | 4–10 |
-| QuantAQ Kitchen | MODULAIR-PM (MOD-PM-00197) | PM monitoring | 4–10 |
-| SMPS | TSI SMPS 3938 | Ultrafine size distribution (9–437 nm) | 1–10 |
-| Vaisala T/RH | Vaisala sensors | Temperature and relative humidity | 1–10 |
-| CO₂ | Aranet4 | CO₂ concentration (Bedroom, Entry, MH Outside) | 1–10 |
+| SMPS Bedroom 2 | TSI SMPS 3938 | Ultrafine size distribution (9–437 nm) | 1–10 |
+| DustTrak | TSI DRX 8533 | Real-time aerosol monitoring | 1–10 (Bedroom 2: burns 1-6, Morning Room: burns 7-10) |
+| AeroTrak Bedroom 2 | TSI AeroTrak 9306-V2 OPC | Optical particle counting | 3–10 |
+| AeroTrak Morning Room | TSI AeroTrak 9306-V2 OPC | Optical particle counting | 2–10 |
+| MODULAIR-PM Bedroom 2 (Portal) | QuantAQ MODULAIR-PM (OPC-N3 + PMS5003) | PM monitoring | 4–10 |
+| MODULAIR-PM Morning Room (Portal) | QuantAQ MODULAIR-PM (OPC-N3 + PMS5003) | PM monitoring | 4–10 |
+| MODULAIR-PM Bedroom 2 (Raw 5s) | QuantAQ MODULAIR-PM (OPC-N3 + PMS5003) | Raw 5 s SD-card record | 4–10 |
+| MODULAIR-PM Morning Room (Raw 5s) | QuantAQ MODULAIR-PM (OPC-N3 + PMS5003) | Raw 5 s SD-card record | 4–10 |
+| PurpleAir Morning Room | PurpleAir PA-II-SD | Low-cost PM monitoring | 6–10 |
 
 ## Data Availability
 

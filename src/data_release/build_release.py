@@ -119,6 +119,18 @@ def build(only=None):
             print(f"README: {readme_path.name}")
         else:
             print("README: skipped (subset build; run without --only to write it)")
+
+        # Copy pdf_links.md to the release directory for user reference
+        pdf_source = _REPO / "docs" / "pdf_links.md"
+        if pdf_source.exists():
+            pdf_target = out_dir / pdf_source.name
+            if pdf_target.exists():
+                pdf_target = out_dir / f"{pdf_source.stem}_{today}{pdf_source.suffix}"
+            import shutil
+            shutil.copy2(pdf_source, pdf_target)
+            print(f"PDF links: {pdf_target.name}")
+        else:
+            print("[WARNING] pdf_links.md not found in docs/")
     else:
         print("\nNo products built.")
     return manifest

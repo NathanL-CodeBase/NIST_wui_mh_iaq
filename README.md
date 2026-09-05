@@ -429,7 +429,34 @@ If you use this software, please cite it as:
 
 ### Related Publications
 
-Two journal articles based on this dataset are currently in progress. Citations will be added here upon acceptance.
+**Journal article** (first of two; second is still in progress):
+
+Lima, N. M., Davis, A. Y., Link, M. F., Cleary, T. G., Falkenstein-Smith, R. L., Robertson, R. L., Emmerich, S. J., Werden, B., DeCarlo, P., and Poppendieck, D. G. (2026). Implications and Impacts of Mitigation Strategies for Wildland–Urban Interface Fire Smoke Exposure in Residential Environments. *ACS ES&T Air*. https://doi.org/10.1021/acsestair.6c00137
+
+```bibtex
+@article{lima_wui_mh_iaq_2026,
+  author  = {Lima, Nathan M. and Davis, Aika Y. and Link, Michael F. and Cleary, Thomas G. and Falkenstein-Smith, Ryan L. and Robertson, Rileigh L. and Emmerich, Steven J. and Werden, Benjamin and DeCarlo, Peter and Poppendieck, Dustin G.},
+  title   = {Implications and Impacts of Mitigation Strategies for Wildland{\textendash}Urban Interface Fire Smoke Exposure in Residential Environments},
+  journal = {ACS ES\&T Air},
+  year    = {2026},
+  doi     = {10.1021/acsestair.6c00137}
+}
+```
+
+**Measurement database:**
+
+Lima, N. M. (2026). Manufactured Housing Wildland-Urban Interface (WUI) Fire Smoke Study Particulate Matter Measurement Data (Version 1.0) [Data set]. National Institute of Standards and Technology. https://doi.org/10.18434/mds2-4284
+
+```bibtex
+@misc{lima_wui_mh_iaq_data_2026,
+  author    = {Lima, Nathan M.},
+  title     = {Manufactured Housing Wildland-Urban Interface ({WUI}) Fire Smoke Study Particulate Matter Measurement Data},
+  year      = {2026},
+  version   = {1.0},
+  publisher = {National Institute of Standards and Technology},
+  doi       = {10.18434/mds2-4284}
+}
+```
 
 ## Contact
 

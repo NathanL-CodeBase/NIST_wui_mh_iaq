@@ -1,0 +1,10 @@
+name: wui
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pandas
+  - numpy
+  - scipy
+  - bokeh
+  - matplotlib

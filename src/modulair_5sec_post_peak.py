@@ -31,6 +31,8 @@ Outputs (under common_folders quantaq_analysis / quantaq_figures):
     modulair_5sec_post_peak_smallmultiples.png        (matplotlib, SI)
     modulair_5sec_post_peak_overlay.png               (matplotlib, main/SI)
     modulair_5sec_pm25_bias.png                       (matplotlib, SI)
+    modulair_5sec_post_peak_pm25_v2.png               (matplotlib, SI)
+    modulair_5sec_bedroom_smps_v2.png                 (matplotlib, SI)
     modulair_5sec_post_peak_summary.md
 
 Author: Nathan Lima
@@ -64,6 +66,8 @@ from src.data_paths import get_common_file  # noqa: E402
 from src.fig_style import (  # noqa: E402
     REF_LINE,
     ROLE_COLORS,
+    SHADE,
+    SHADE_ALPHA,
     UNIT_COLORS,
     apply_est_style,
     figsize,
@@ -75,6 +79,7 @@ from src.modulair_5sec_io import (  # noqa: E402
     UNIT_CONFIG,
     load_5sec_burn,
     load_event_times,
+    load_portal_burn,
 )
 
 # ==============================================================================
@@ -1023,6 +1028,183 @@ def _mpl_pm25_bias(results: list, fig_dir: Path) -> None:
     save_fig(fig, fig_dir / "modulair_5sec_pm25_bias.png")
 
 
+def _smooth_1min(vals: pd.Series) -> pd.Series:
+    """Centered 12-sample (1 min) rolling mean of a 5 s series, for display only."""
+    return pd.to_numeric(vals, errors="coerce").rolling(12, center=True, min_periods=6).mean()
+
+
+def _peak_starts() -> dict:
+    """Map (burn, unit) -> t_peak_start from the peak-window CSV (NaT if absent)."""
+    path = get_common_file("quantaq_analysis") / PEAK_CSV
+    df = pd.read_csv(path)
+    df["t_peak_start"] = pd.to_datetime(df.get("t_peak_start"), errors="coerce")
+    return {(r.burn, r.unit): r.t_peak_start for r in df.itertuples()}
+
+
+def _hours_since(ts: pd.Series, t0: pd.Timestamp) -> pd.Series:
+    """Hours between each timestamp and t0."""
+    return (ts - t0).dt.total_seconds() / 3600.0
+
+
+def _mpl_post_peak_pm25_v2(results: list, df_at_by_loc: dict, fig_dir: Path) -> None:
+    """
+    SI figure, replaces the normalized small multiples: Morning Room post-peak
+    record, one row per burn, two columns on a shared time axis (hours since the
+    end of the peak window, t_peak_end):
+        (left)  mass: portal MODULAIR-PM2 PM2.5 vs co-located AeroTrak2 PM3;
+        (right) number: OPC-N3 bin 0 vs AeroTrak2 Ch1 (0.3-0.5 um).
+    Both columns are absolute values on log axes, so no trace is dropped for a
+    near-zero value at t_peak_end. The peak window is shaded and t_peak_end is
+    the x origin. Mass and number are separate panels rather than two y-scales
+    on one axis.
+
+    Reading: if the portal PM2.5 decays more slowly than the AeroTrak PM3 while
+    OPC-N3 bin 0 is elevated, the post-peak bin 0 rise is carried into the
+    delivered PM2.5.
+    """
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    unit = "MODULAIR-PM2"
+    pairs = [r for r in results
+             if r["unit"] == unit and r.get("data_present") and pd.notna(r.get("t_peak_end"))]
+    pairs = sorted(pairs, key=lambda r: int(r["burn"].replace("burn", "")))
+    if not pairs:
+        print("    [mpl] no Morning Room pairs for post-peak PM2.5 v2.")
+        return
+    starts = _peak_starts()
+    df_at = df_at_by_loc.get("morning_room")
+    color = UNIT_COLOR[unit]
+    x_lo = -0.75
+
+    nrows = len(pairs)
+    fig, axes = plt.subplots(nrows, 2, figsize=(figsize("double")[0], 1.6 * nrows + 0.8),
+                             sharex=True, squeeze=False)
+    for i, rec in enumerate(pairs):
+        ax_m, ax_n = axes[i]
+        t0, t_end = rec["t_peak_end"], rec["_t_end"]
+        x_hi = _hours_since(pd.Series([t_end]), t0).iloc[0] if pd.notna(t_end) else MAX_WIN_HR
+        burn_no = int(rec["burn"].replace("burn", ""))
+        ax_m.set_ylabel(f"Burn {burn_no:02d}", fontsize=_FS - 1)
+
+        # Mass column.
+        portal = load_portal_burn(unit, rec["burn"])
+        if portal is not None and "pm25" in portal.columns:
+            xp = _hours_since(portal["timestamp"], t0)
+            mp = (xp >= x_lo) & (xp <= x_hi)
+            ax_m.semilogy(xp[mp], portal.loc[mp, "pm25"].where(portal.loc[mp, "pm25"] > 0),
+                          color=color, lw=1.2)
+        if df_at is not None:
+            day = df_at[df_at["Date and Time"].dt.date == t0.date()]
+            xa = _hours_since(day["Date and Time"], t0)
+            ma = (xa >= x_lo) & (xa <= x_hi)
+            pm3 = day.loc[ma, "PM3 (µg/m³)"]
+            ax_m.semilogy(xa[ma], pm3.where(pm3 > 0), color=AEROTRAK_COLOR, lw=1.1, ls="--")
+
+        # Number column.
+        df = rec["_df"]
+        xo = _hours_since(df["timestamp"], t0)
+        mo = (xo >= x_lo) & (xo <= x_hi)
+        b0 = _smooth_1min(df["bin0"])[mo]
+        ax_n.semilogy(xo[mo], b0.where(b0 > 0), color=color, lw=1.2)
+        if rec.get("_at_ts") is not None:
+            xc = _hours_since(rec["_at_ts"], t0)
+            mc = (xc >= x_lo) & (xc <= x_hi)
+            ch1 = pd.to_numeric(rec["_at_vals"][mc], errors="coerce")
+            ax_n.semilogy(xc[mc], ch1.where(ch1 > 0), color=AEROTRAK_COLOR, lw=1.1, ls="--")
+
+        t_start = starts.get((rec["burn"], unit), pd.NaT)
+        for ax in (ax_m, ax_n):
+            if pd.notna(t_start):
+                ax.axvspan((t_start - t0).total_seconds() / 3600.0, 0.0,
+                           color=SHADE, alpha=SHADE_ALPHA, lw=0)
+            ax.axvline(0.0, color=REF_LINE, lw=0.8, ls=":")
+            ax.tick_params(labelsize=_FS - 2)
+        ax_n.text(0.98, 0.94, "saturated" if rec.get("saturated") else "not saturated",
+                  transform=ax_n.transAxes, ha="right", va="top", fontsize=_FS - 4)
+
+    axes[0, 0].set_title("PM mass (µg·m⁻³)", fontsize=_FS, fontweight="bold")
+    axes[0, 1].set_title("Number concentration (particles·cm⁻³)", fontsize=_FS, fontweight="bold")
+    axes[-1, 0].set_xlim(left=x_lo)
+    fig.supxlabel("Hours since end of peak window (t_peak_end)", fontsize=_FS)
+    handles = [
+        Line2D([0], [0], color=color, lw=1.2, label="MODULAIR-PM2: portal PM2.5 (left), OPC-N3 bin 0 (right)"),
+        Line2D([0], [0], color=AEROTRAK_COLOR, lw=1.1, ls="--",
+               label="AeroTrak2: PM3 (left), Ch1 0.3 µm to 0.5 µm (right)"),
+        Patch(color=SHADE, alpha=SHADE_ALPHA, label="peak window"),
+    ]
+    fig.legend(handles=handles, loc="upper center", ncol=1, fontsize=_FS - 3, frameon=False,
+               bbox_to_anchor=(0.5, 1.0 + 0.75 / (1.6 * nrows + 0.8)))
+    save_fig(fig, fig_dir / "modulair_5sec_post_peak_pm25_v2.png")
+
+
+def _mpl_bedroom_smps_v2(results: list, fig_dir: Path) -> None:
+    """
+    SI figure, replaces the +2 h ratio bars: Bedroom 2 post-peak number
+    concentration of MODULAIR-PM1 OPC-N3 bin 0 (0.35-0.46 um), the co-located
+    SMPS 300-437 nm sum, and AeroTrak1 Ch1 (0.3-0.5 um), one panel per burn,
+    versus hours since t_peak_end on a log axis. All three are particles/cm3,
+    so the panels show absolute levels rather than a ratio of ratios. A dotted
+    line marks +2 h, the time used for the OPC-N3 to SMPS comparison in the text.
+    """
+    from matplotlib.lines import Line2D
+
+    unit = "MODULAIR-PM1"
+    pairs = [r for r in results
+             if r["unit"] == unit and r.get("data_present") and pd.notna(r.get("t_peak_end"))]
+    pairs = sorted(pairs, key=lambda r: int(r["burn"].replace("burn", "")))
+    if not pairs:
+        print("    [mpl] no Bedroom 2 pairs for SMPS comparison v2.")
+        return
+    color = UNIT_COLOR[unit]
+    x_lo = -0.25
+
+    ncols = 3
+    nrows = int(np.ceil(len(pairs) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(figsize("double")[0], 2.3 * nrows),
+                             sharex=True, sharey=True)
+    axes = np.array(axes).flatten()
+    for ax, rec in zip(axes, pairs):
+        t0, t_end = rec["t_peak_end"], rec["_t_end"]
+        x_hi = _hours_since(pd.Series([t_end]), t0).iloc[0] if pd.notna(t_end) else MAX_WIN_HR
+        df = rec["_df"]
+        xo = _hours_since(df["timestamp"], t0)
+        mo = (xo >= x_lo) & (xo <= x_hi)
+        b0 = _smooth_1min(df["bin0"])[mo]
+        ax.semilogy(xo[mo], b0.where(b0 > 0), color=color, lw=1.2)
+        if rec.get("_smps_ts") is not None:
+            xs = _hours_since(rec["_smps_ts"], t0)
+            ms = (xs >= x_lo) & (xs <= x_hi)
+            sv = pd.to_numeric(rec["_smps_vals"][ms], errors="coerce")
+            ax.semilogy(xs[ms], sv.where(sv > 0), color=SMPS_COLOR, lw=1.1,
+                        marker="o", ms=2.5)
+        if rec.get("_at_ts") is not None:
+            xc = _hours_since(rec["_at_ts"], t0)
+            mc = (xc >= x_lo) & (xc <= x_hi)
+            ch1 = pd.to_numeric(rec["_at_vals"][mc], errors="coerce")
+            ax.semilogy(xc[mc], ch1.where(ch1 > 0), color=AEROTRAK_COLOR, lw=1.0, ls="--")
+        ax.axvline(0.0, color=REF_LINE, lw=0.8, ls=":")
+        ax.axvline(2.0, color=SHADE, lw=0.8, ls=":")
+        burn_no = int(rec["burn"].replace("burn", ""))
+        sealed = " (sealed)" if rec["burn"] in ("burn5", "burn6") else ""
+        ax.set_title(f"Burn {burn_no:02d}{sealed}", fontsize=_FS - 1)
+        ax.tick_params(labelsize=_FS - 2)
+    for ax in axes[len(pairs):]:
+        ax.set_visible(False)
+
+    fig.supxlabel("Hours since end of peak window (t_peak_end)", fontsize=_FS)
+    fig.supylabel("Number concentration (particles·cm⁻³)", fontsize=_FS)
+    handles = [
+        Line2D([0], [0], color=color, lw=1.2, label="MODULAIR-PM1 OPC-N3 bin 0 (0.35 µm to 0.46 µm)"),
+        Line2D([0], [0], color=SMPS_COLOR, lw=1.1, marker="o", ms=3, label="SMPS 300 nm to 437 nm"),
+        Line2D([0], [0], color=AEROTRAK_COLOR, lw=1.0, ls="--", label="AeroTrak1 Ch1 (0.3 µm to 0.5 µm)"),
+        Line2D([0], [0], color=SHADE, lw=0.8, ls=":", label="t_peak_end + 2 h"),
+    ]
+    fig.legend(handles=handles, loc="lower right", ncol=1, fontsize=_FS - 3,
+               frameon=True, bbox_to_anchor=(0.98, 0.04))
+    save_fig(fig, fig_dir / "modulair_5sec_bedroom_smps_v2.png")
+
+
 # ==============================================================================
 # MARKDOWN OUTPUTS
 # ==============================================================================
@@ -1192,6 +1374,8 @@ def main() -> None:
     _mpl_small_multiples(results, fig_dir)
     _mpl_overlay(results, fig_dir)
     _mpl_pm25_bias(results, fig_dir)
+    _mpl_post_peak_pm25_v2(results, df_at_by_loc, fig_dir)
+    _mpl_bedroom_smps_v2(results, fig_dir)
 
     print("\nWriting markdown outputs...")
     _write_summary_md(results, summary, out_dir)

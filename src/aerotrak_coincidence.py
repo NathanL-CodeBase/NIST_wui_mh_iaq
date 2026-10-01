@@ -447,6 +447,15 @@ def _load_smps_numconc(burn_date: pd.Timestamp) -> pd.DataFrame | None:
         print(f"  [SMPS] Datetime parse failed for {fpath.name}: {exc}")
         return None
 
+    # Excel stores whole-number diameter midpoints (e.g. 322 nm, 346 nm) as
+    # integers, so cast every numeric label to float; otherwise the float-key
+    # size filters below silently drop those channels from band sums.
+    df.columns = [
+        float(c) if isinstance(c, (int, float, np.integer, np.floating)) and not isinstance(c, bool)
+        else c
+        for c in df.columns
+    ]
+
     # Convert size-bin columns (float keys) to numeric; Excel FALSE -> 0
     size_cols = [c for c in df.columns if isinstance(c, float) and not isinstance(c, bool)]
     for c in size_cols:
@@ -1482,27 +1491,22 @@ def _mpl_loss_vs_peakmass(all_results: list[dict]) -> None:
         label=f"{COINCIDENCE_LOSS_SPEC:.0%} coincidence-loss limit",
     )
 
-    # Single annotation (replaces overlapping per-point labels). The measured
-    # count understates the true concentration under overload, so the plotted
-    # losses are lower bounds; state both facts once rather than per point.
-    min_l = min(r["L_central"] for r in records)
-    if min_l > 0:
-        ax.annotate(
-            f"all points exceed the {COINCIDENCE_LOSS_SPEC:.0%} loss limit\n"
-            f"(minimum L = {min_l:.0%}); L at the measured\n"
-            f"count is a lower bound on the actual loss",
-            xy=(0.03, 0.35), xycoords="axes fraction", ha="left", va="center",
-            fontsize=_FS - 2,
-        )
+    # The "all points exceed the limit; L is a lower bound" statement lives in
+    # the figure caption: in-plot text collided with the error bars on the
+    # linear axis.
 
-    ax.set_yscale("log")
+    # Linear axis in tenths: the losses span only 0.18 to 0.45, so a log axis
+    # adds scientific-notation ticks without revealing extra structure.
+    ax.set_ylim(0.0, 0.6)
+    ax.set_yticks(np.arange(0.0, 0.61, 0.1))
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%.1f"))
     ax.set_xlabel("Peak PM3 mass (µg/m³)", fontsize=_FS)
     ax.set_ylabel("Coincidence loss L (fraction)", fontsize=_FS)
     ax.tick_params(labelsize=_FS)
-    ax.legend(fontsize=_FS - 2, loc="lower right")
+    ax.legend(fontsize=_FS - 2, loc="upper right")
 
     fig_dir = get_common_file("coincidence_figures")
-    save_fig(fig, fig_dir / "aerotrak_loss_vs_peakmass.png")
+    save_fig(fig, fig_dir / "aerotrak_loss_vs_peakmass_v2.png")
 
 
 # ==============================================================================

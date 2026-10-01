@@ -22,6 +22,8 @@ Outputs (under common_folders quantaq_analysis / quantaq_figures):
     modulair_5sec_peak_<burn>_<unit>.html         (Bokeh, one per pair)
     modulair_5sec_bin_response_grid.png           (matplotlib, SI)
     modulair_5sec_qaqc_overlap.png                (matplotlib)
+    modulair_5sec_opc_timeseries_grid_v2.png      (matplotlib, SI)
+    modulair_5sec_qaqc_overlap_v2.png             (matplotlib, SI)
     modulair_5sec_peak_summary.md
 
 Author: Nathan Lima
@@ -1327,6 +1329,182 @@ def _mpl_qaqc_overlap(results: list[dict]) -> None:
     save_fig(fig, fig_dir / "modulair_5sec_qaqc_overlap.png")
 
 
+def _smooth_1min(vals: pd.Series) -> pd.Series:
+    """Centered 12-sample (1 min) rolling mean of a 5 s series, for display only."""
+    return pd.to_numeric(vals, errors="coerce").rolling(12, center=True, min_periods=6).mean()
+
+
+def _mpl_opc_timeseries_grid_v2(results: list[dict]) -> None:
+    """
+    SI figure, replaces the bin-response grid: OPC-N3 bin 0 (0.35-0.46 um) and
+    bin 1 (0.46-0.66 um) number concentration versus minutes from ignition,
+    one row per burn and one column per location (Bedroom 2 left, Morning Room
+    right), log y on a shared scale.
+
+    The dotted line is the bin 0 pre-fire background (mean over the
+    BASELINE_MIN minutes before ignition) and the shaded band is the peak
+    window, so a bin 0 drop below its own pre-fire level during the peak reads
+    directly against the simultaneous bin 1 rise. Traces are 1 min centered
+    means of the 5 s record so the 5 s counting noise does not hide the trend.
+
+    The SD-card OPC-N3 bins are per-volume number concentrations: bin masses
+    computed from them reproduce the on-board opc_pm25 to within a near-constant
+    factor, which would not hold for raw counts per 5 s sample.
+    """
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    t_lo_min, t_hi_min = -30.0, 120.0
+    units = ["MODULAIR-PM1", "MODULAIR-PM2"]
+    burns = sorted({r["burn"] for r in results}, key=lambda b: int(b.replace("burn", "")))
+    by_key = {(r["burn"], r["unit"]): r for r in results}
+
+    nrows = len(burns)
+    fig, axes = plt.subplots(
+        nrows, 2, figsize=(figsize("double")[0], 1.55 * nrows + 0.8),
+        sharex=True, sharey=True, squeeze=False,
+    )
+    for i, burn in enumerate(burns):
+        for j, unit in enumerate(units):
+            ax = axes[i, j]
+            rec = by_key.get((burn, unit))
+            if i == 0:
+                ax.set_title(UNIT_CONFIG[unit]["location_label"], fontsize=_FS, fontweight="bold")
+            if j == 0:
+                ax.set_ylabel(f"Burn {int(burn.replace('burn', '')):02d}", fontsize=_FS - 1)
+            ax.tick_params(labelsize=_FS - 2)
+            if rec is None or not rec.get("data_present") or pd.isna(rec.get("_ignition")):
+                ax.text(0.5, 0.5, "no 5 s data", transform=ax.transAxes,
+                        ha="center", va="center", fontsize=_FS - 3, color=SHADE)
+                continue
+            df = rec["_df"]
+            ign = rec["_ignition"]
+            tmin = (df["timestamp"] - ign).dt.total_seconds() / 60.0
+            m = (tmin >= t_lo_min) & (tmin <= t_hi_min)
+            color = UNIT_COLOR[unit]
+            for b, ls, lw in (("bin0", "-", 1.3), ("bin1", "--", 1.0)):
+                y = _smooth_1min(df[b])[m]
+                ax.semilogy(tmin[m], y.where(y > 0), color=color, ls=ls, lw=lw)
+            pre = rec.get("pre_count_bin0", np.nan)
+            if np.isfinite(pre) and pre > 0:
+                ax.axhline(pre, color=REF_LINE, ls=":", lw=1.0)
+            if pd.notna(rec.get("t_peak_start")) and pd.notna(rec.get("t_peak_end")):
+                a = (rec["t_peak_start"] - ign).total_seconds() / 60.0
+                b_ = (rec["t_peak_end"] - ign).total_seconds() / 60.0
+                ax.axvspan(a, b_, color=SHADE, alpha=SHADE_ALPHA, lw=0)
+            tags = []
+            if rec.get("bedroom_sealed"):
+                tags.append("sealed")
+            tags.append("saturated" if rec.get("saturated") else "not saturated")
+            ax.text(0.98, 0.94, ", ".join(tags), transform=ax.transAxes,
+                    ha="right", va="top", fontsize=_FS - 4)
+    for ax in axes[-1, :]:
+        ax.set_xlim(t_lo_min, t_hi_min)
+
+    fig.supxlabel("Minutes from ignition", fontsize=_FS)
+    fig.supylabel("OPC-N3 number concentration (particles·cm⁻³)", fontsize=_FS)
+    handles = [
+        Line2D([0], [0], color="#555555", lw=1.3, ls="-", label="bin 0 (0.35 µm to 0.46 µm)"),
+        Line2D([0], [0], color="#555555", lw=1.0, ls="--", label="bin 1 (0.46 µm to 0.66 µm)"),
+        Line2D([0], [0], color=REF_LINE, lw=1.0, ls=":", label="bin 0 pre-fire background"),
+        Patch(color=SHADE, alpha=SHADE_ALPHA, label="peak window"),
+    ]
+    fig.legend(handles=handles, loc="upper center", ncol=2, fontsize=_FS - 2,
+               frameon=False, bbox_to_anchor=(0.5, 1.0 + 0.45 / (1.55 * nrows + 0.8)))
+
+    fig_dir = get_common_file("quantaq_figures")
+    save_fig(fig, fig_dir / "modulair_5sec_opc_timeseries_grid_v2.png")
+
+
+def _mpl_qaqc_overlap_v2(results: list[dict]) -> None:
+    """
+    SI figure, replaces the single-axis overlap chart: peak-window duration and
+    portal QA/QC removal duration (minutes) per burn, one panel per location.
+
+    Solid peak-window bars are windows defined by nephelometer bin 0 saturation
+    (first ceiling sample to recovery below RECOVERY_FRAC of the plateau).
+    Hatched bars are records that never saturated; their window comes from the
+    fallback rule (burn-log interval from garage-door closure to portable air
+    cleaner activation, else the AeroTrak or OPC-N3 peak). A burn with a portal
+    record but no removed minutes is labeled "none" so it is not mistaken for
+    missing data.
+    """
+    from matplotlib.patches import Patch
+
+    units = ["MODULAIR-PM1", "MODULAIR-PM2"]
+    removal_color = "#555555"
+    rows_all = [
+        r for r in results
+        if r.get("data_present") and pd.notna(r.get("t_peak_end"))
+        and not np.isnan(r.get("peak_window_duration_minutes", np.nan))
+    ]
+    if not rows_all:
+        print("    [mpl] no peak-window records for QA/QC overlap v2.")
+        return
+    methods = {r.get("peak_window_method") for r in rows_all if not r.get("saturated")}
+    fallback_label = (
+        "Peak window, not saturated\n(garage closure to PAC on)"
+        if methods <= {"fallback_burnlog"}
+        else "Peak window, not saturated\n(fallback rule)"
+    )
+
+    fig, axes = plt.subplots(1, 2, figsize=(figsize("double")[0], 3.2), sharey=True)
+    w = 0.38
+    for ax, unit in zip(axes, units):
+        rows = sorted([r for r in rows_all if r["unit"] == unit],
+                      key=lambda r: int(r["burn"].replace("burn", "")))
+        x = np.arange(len(rows))
+        color = UNIT_COLOR[unit]
+        for xi, r in zip(x, rows):
+            bar = ax.bar(xi - w / 2, r["peak_window_duration_minutes"], w,
+                         color=color, alpha=0.85, edgecolor=color)
+            if not r.get("saturated"):
+                bar[0].set_hatch("///")
+                bar[0].set_facecolor("white")
+            q = r.get("portal_qaqc_removal_duration_minutes", np.nan)
+            if np.isfinite(q) and q > 0:
+                ax.bar(xi + w / 2, q, w, color=removal_color, alpha=0.85)
+            else:
+                txt = "none" if r.get("portal_present") else "no portal\ndata"
+                ax.text(xi + w / 2, 0.4, txt, rotation=90, ha="center", va="bottom",
+                        fontsize=_FS - 4)
+        labels = [
+            f"{int(r['burn'].replace('burn', '')):02d}" + ("*" if r.get("bedroom_sealed") else "")
+            for r in rows
+        ]
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=_FS - 2)
+        if any(r.get("bedroom_sealed") for r in rows):
+            ax.text(0.99, 0.97, "* Bedroom 2 sealed", transform=ax.transAxes,
+                    ha="right", va="top", fontsize=_FS - 4)
+        ax.set_xlabel("Burn", fontsize=_FS)
+        ax.set_title(UNIT_CONFIG[unit]["location_label"], fontsize=_FS, fontweight="bold")
+        ax.tick_params(labelsize=_FS - 1)
+    axes[0].set_ylabel("Duration (minutes)", fontsize=_FS)
+
+    from matplotlib.legend_handler import HandlerTuple
+
+    # Peak-window bars take the location color, so each peak-window legend
+    # entry shows both location swatches; a single gray swatch read as the
+    # same mark as the gray QA/QC removal bars.
+    c1, c2 = UNIT_COLOR["MODULAIR-PM1"], UNIT_COLOR["MODULAIR-PM2"]
+    sat_handle = (Patch(facecolor=c1, edgecolor=c1, alpha=0.85),
+                  Patch(facecolor=c2, edgecolor=c2, alpha=0.85))
+    fb_handle = (Patch(facecolor="white", edgecolor=c1, hatch="///"),
+                 Patch(facecolor="white", edgecolor=c2, hatch="///"))
+    rm_handle = Patch(color=removal_color, alpha=0.85)
+    fig.legend(
+        [sat_handle, fb_handle, rm_handle],
+        ["Peak window, nephelometer saturated", fallback_label, "Portal QA/QC removal"],
+        handler_map={tuple: HandlerTuple(ndivide=None, pad=0.0)},
+        loc="upper center", ncol=3, fontsize=_FS - 3, frameon=False,
+        bbox_to_anchor=(0.5, 1.12), handlelength=3.0,
+    )
+
+    fig_dir = get_common_file("quantaq_figures")
+    save_fig(fig, fig_dir / "modulair_5sec_qaqc_overlap_v2.png")
+
+
 # ==============================================================================
 # CSV OUTPUTS
 # ==============================================================================
@@ -1778,6 +1956,8 @@ def main() -> None:
     _mpl_bin_response_grid(results)
     _mpl_qaqc_timeseries_fig2(results)
     _mpl_qaqc_overlap(results)
+    _mpl_opc_timeseries_grid_v2(results)
+    _mpl_qaqc_overlap_v2(results)
 
     print("\nWriting markdown outputs...")
     _write_summary_md(results, summary)

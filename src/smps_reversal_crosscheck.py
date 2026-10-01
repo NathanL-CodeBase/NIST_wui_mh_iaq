@@ -385,7 +385,8 @@ def _plot_small_multiples(results: list[dict]) -> None:
         ax = axes[k // ncol][k % ncol]
         t0 = r["_win_start"]
         at_min = (r["_at_times"] - t0).dt.total_seconds() / 60.0
-        ax.plot(at_min, r["_at_ch1"], color=at_color, lw=1.6, label="AeroTrak Ch1 (reported)")
+        ax.plot(at_min, r["_at_ch1"], color=at_color, lw=1.6,
+                label="AeroTrak1 Ch1, 0.3 µm to 0.5 µm (reported)")
 
         df_smps = r["_df_smps"]
         if df_smps is not None:
@@ -402,13 +403,13 @@ def _plot_small_multiples(results: list[dict]) -> None:
                     ms=4,
                     lw=1.2,
                     ls="--",
-                    label="SMPS 300-437 nm",
+                    label="SMPS 300 nm to 437 nm",
                 )
 
         ax.axhline(N_MEAS_CEILING_CM3, color=REF_LINE, lw=0.8, ls="-.")
         ax.axhline(COINCIDENCE_THRESHOLD_CM3, color=REF_LINE, lw=0.8, ls=":")
         ax.set_yscale("log")
-        ax.set_title(r["burn"], fontsize=11)
+        ax.set_title(f"Burn {int(r['burn'].replace('burn', '')):02d}", fontsize=11, fontweight="bold")
         ax.tick_params(labelsize=10)
 
     # Blank any unused panels.
@@ -419,21 +420,24 @@ def _plot_small_multiples(results: list[dict]) -> None:
     # distinct heights so nothing overlaps.
     fig.subplots_adjust(left=0.10, right=0.98, top=0.93, bottom=0.16, hspace=0.42, wspace=0.26)
     fig.text(0.54, 0.075, "Minutes from reversal-window start", ha="center", fontsize=12)
-    fig.text(0.015, 0.55, "Count concentration (#/cm³)", va="center", rotation=90, fontsize=12)
+    fig.text(0.015, 0.55, "Number concentration (particles·cm⁻³)", va="center", rotation=90, fontsize=12)
 
     handles, labels = axes[0][0].get_legend_handles_labels()
     handles += [
         plt.Line2D([], [], color=REF_LINE, ls="-.", lw=0.8),
         plt.Line2D([], [], color=REF_LINE, ls=":", lw=0.8),
     ]
-    labels += ["Poisson rollover ceiling", "Coincidence limit"]
+    labels += [
+        f"Poisson rollover ceiling ({N_MEAS_CEILING_CM3:.0f} particles·cm⁻³)",
+        f"10 % coincidence limit ({COINCIDENCE_THRESHOLD_CM3:.0f} particles·cm⁻³)",
+    ]
     fig.legend(
-        handles, labels, loc="lower center", bbox_to_anchor=(0.54, 0.0),
-        ncol=4, fontsize=9, frameon=False,
+        handles, labels, loc="lower center", bbox_to_anchor=(0.54, -0.04),
+        ncol=2, fontsize=9, frameon=False,
     )
 
     fig_dir = get_common_file("coincidence_figures")
-    save_fig(fig, fig_dir / "smps_reversal_crosscheck.png")
+    save_fig(fig, fig_dir / "smps_reversal_crosscheck_v2.png")
 
 
 # ==============================================================================

@@ -38,12 +38,14 @@
       "path": "PATH_TO_DATA_ROOT/burn_data/quantaq",
       "description": "QuantAQ MODULAIR-PM sensor - Bedroom2 location (MOD-PM-00194)",
       "file_pattern": "MOD-PM-00194*.csv",
+      "path_5sec": "PATH_TO_DATA_ROOT/burn_data/quantaq/5hz_sd-card_data/MOD-PM-00194",
       "notes": "PM1, PM2.5, PM10, time shift: -2.97 min (Burns 4-10)"
     },
     "quantaq_kitchen": {
       "path": "PATH_TO_DATA_ROOT/burn_data/quantaq",
       "description": "QuantAQ MODULAIR-PM sensor - Kitchen location (MOD-PM-00197)",
       "file_pattern": "MOD-PM-00197*.csv",
+      "path_5sec": "PATH_TO_DATA_ROOT/burn_data/quantaq/5hz_sd-card_data/MOD-PM-00197",
       "notes": "PM1, PM2.5, PM10, time shift: 0 min (Burns 4-10)"
     },
     "smps": {

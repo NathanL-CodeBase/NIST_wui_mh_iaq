@@ -52,6 +52,7 @@ NEUTRAL = "#999999"
 # Axis labels carry units. Keep them here so every script writes them the same way.
 AXIS_LABELS = {
     "pm": "PM concentration (µg/m³)",
+    "pm_mass": "PM mass concentration (µg/m³)",
     "pm1": "PM1 (µg/m³)",
     "aerotrak_ch1": "0.3 µm to 0.5 µm (#/cm³)",
     "opc_bin0": "OPC-N3 bin 0 (#/cm³)",

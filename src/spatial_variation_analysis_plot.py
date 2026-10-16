@@ -50,6 +50,9 @@ Update log:
     2026-10-16 (N. Lima): Arrival-lag figure moved to the shared journal style
         (src/plot_style.py); lag now plotted as Bedroom 2 minus Morning Room
         (positive = Morning Room first) with a one-line y-axis label.
+    2026-10-16 (N. Lima): R_sub figure moved to the same style and size as the
+        arrival-lag figure (both 3.33 x 3.00 in, burn-number x-axis) with a
+        plain two-line y-axis label in place of the R_sub symbol.
 """
 
 import os
@@ -81,17 +84,11 @@ sys.path.insert(0, parent_dir)
 from scripts import get_script_metadata  # noqa: E402
 from scripts.plotting_utils import apply_text_formatting  # noqa: E402
 from src.data_paths import get_common_file, get_data_root  # noqa: E402
-from src.fig_style import (  # noqa: E402
-    OKABE_ITO,
-    REF_LINE,
-    apply_est_style,
-    figsize,
-    save_fig,
-)
 from src.plot_style import OKABE_ITO as JOURNAL_COLORS  # noqa: E402
 from src.plot_style import figsize as journal_figsize  # noqa: E402
 from src.project_style import (  # noqa: E402
     AXIS_LABELS,
+    REF_LINE,
     dated_stem,
     journal_style,
     save_pdf_png,
@@ -147,6 +144,15 @@ AEROTRAK_PM_SIZE_FOR_PM25 = "PM3 (µg/m³)"
 
 # Ratio metrics to plot
 RATIO_METRICS = ["Peak_Ratio_Index", "CRBox_Activation_Ratio", "Average_Ratio"]
+
+# Arrival-lag and R_sub figures sit side by side on the poster, so they share
+# one size: single column (3.33 in) by 3.00 in, tall enough for the two-line
+# R_sub y-axis label.
+SPATIAL_FIG_ASPECT = 0.9
+
+# Reliable-regime limit used for R_sub; must match RELIABLE_REGIME_UG_M3 in
+# spatial_variation_analysis.py, which computes the R_sub columns.
+R_SUB_LIMIT_UG_M3 = 500.0
 
 # Plot configuration
 PLOT_Y_RANGE = (0, 1.5)  # Y-axis range for ratio plots
@@ -655,7 +661,7 @@ def plot_arrival_lag(aerotrak_df, output_dir, overwrite=False):
     labels = [str(b).replace("burn", "") for b in per_burn["Burn_ID"]]
     x = np.arange(len(labels))
     with journal_style():
-        fig, ax = plt.subplots(figsize=journal_figsize("single", aspect=0.75))
+        fig, ax = plt.subplots(figsize=journal_figsize("single", aspect=SPATIAL_FIG_ASPECT))
 
         ax.axhline(0.0, color=REF_LINE, lw=0.5, ls="--", zorder=1)
         ax.plot(
@@ -692,12 +698,17 @@ def plot_arrival_lag(aerotrak_df, output_dir, overwrite=False):
         )
 
 
-def plot_r_sub(aerotrak_df, output_dir, pm_size="PM3 (µg/m³)"):
+def plot_r_sub(aerotrak_df, output_dir, pm_size="PM3 (µg/m³)", overwrite=False):
     """
     Static per-burn reliable-regime ratio R_sub (Bedroom 2 / Morning Room).
 
-    Plots R_sub_median with IQR whiskers for each burn at the given PM size, with
-    a ratio=1 reference line (spatial uniformity in the reliable regime).
+    Plots R_sub_median with IQR whiskers for each burn at the given PM size,
+    with a ratio = 1 reference line (equal concentration in both rooms). Only
+    time steps where both rooms read below R_SUB_LIMIT_UG_M3 contribute, so
+    the ratio stays out of the AeroTrak count-suppression regime. Drawn at the
+    same size and x-axis style as the arrival-lag figure so the two sit side
+    by side on the poster. Uses the shared journal style and writes an
+    ISO-dated PDF and 600 dpi PNG.
 
     Parameters
     ----------
@@ -707,50 +718,64 @@ def plot_r_sub(aerotrak_df, output_dir, pm_size="PM3 (µg/m³)"):
         Directory to write the figure into.
     pm_size : str
         PM size row to plot (default AeroTrak PM3).
+    overwrite : bool
+        Replace same-day files instead of raising.
+
+    Returns
+    -------
+    list of Path
+        Files written (empty if skipped).
     """
     if "R_sub_median" not in aerotrak_df.columns:
         print("  [skip] R_sub columns not present")
-        return
+        return []
 
     sub = aerotrak_df[aerotrak_df["PM_Size"] == pm_size].copy()
     sub = sub[sub["R_sub_median"].notna()]
     sub = sub.sort_values("Burn_ID", key=lambda s: s.map(_burn_sort_key))
     if sub.empty:
         print("  [skip] no R_sub values to plot")
-        return
+        return []
 
-    labels = [str(b).replace("burn", "Burn ") for b in sub["Burn_ID"]]
+    labels = [str(b).replace("burn", "") for b in sub["Burn_ID"]]
     x = np.arange(len(labels))
     med = sub["R_sub_median"].to_numpy()
     lo = sub["R_sub_iqr_low"].to_numpy()
     hi = sub["R_sub_iqr_high"].to_numpy()
     yerr = np.vstack([med - lo, hi - med])
-
-    apply_est_style()
-    fig, ax = plt.subplots(figsize=figsize("onehalf", aspect=0.7))
-
-    ax.axhline(1.0, color=REF_LINE, lw=1.0, ls="--", zorder=1)
-    ax.errorbar(
-        x,
-        med,
-        yerr=yerr,
-        fmt="o",
-        color=OKABE_ITO["blue"],
-        ecolor=OKABE_ITO["blue"],
-        elinewidth=1.2,
-        capsize=3,
-        markersize=6,
-        zorder=3,
+    print(
+        f"  R_sub median ({pm_size}): {np.median(med):.2f} across {len(med)} burns, "
+        f"range {med.min():.2f} to {med.max():.2f}"
     )
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=45, ha="right")
-    ax.set_ylabel("R_sub, Bedroom 2 / Morning Room\n(both PM3 < 500 ug/m3)")
-    ax.set_ylim(bottom=0)
+    pm_name = pm_size.split(" ")[0]
+    with journal_style():
+        fig, ax = plt.subplots(figsize=journal_figsize("single", aspect=SPATIAL_FIG_ASPECT))
 
-    out = os.path.join(output_dir, "spatial_r_sub.png")
-    save_fig(fig, out)
-    print(f"  Saved R_sub figure to: {out}")
+        ax.axhline(1.0, color=REF_LINE, lw=0.5, ls="--", zorder=1)
+        ax.errorbar(
+            x,
+            med,
+            yerr=yerr,
+            fmt="o",
+            color=JOURNAL_COLORS["blue"],
+            ecolor=JOURNAL_COLORS["blue"],
+            elinewidth=0.5,
+            capsize=2,
+            markersize=4,
+            zorder=3,
+        )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels)
+        ax.set_xlabel("Burn")
+        ax.set_ylabel(
+            f"{pm_name} ratio (Bedroom 2 / Morning Room)\n"
+            f"both rooms < {R_SUB_LIMIT_UG_M3:.0f} µg/m³"
+        )
+        ax.set_ylim(bottom=0)
+
+        return save_pdf_png(fig, dated_stem(output_dir, "spatial_r_sub"), overwrite=overwrite)
 
 
 # ============================================================================

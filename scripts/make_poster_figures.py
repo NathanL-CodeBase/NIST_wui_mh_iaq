@@ -1,13 +1,15 @@
 """
-Build the four updated poster and manuscript figures without rerunning the full
+Build the updated poster and manuscript figures without rerunning the full
 analysis scripts.
 
 Purpose:
     Regenerate, in the shared journal style (src/plot_style.py), only:
-        burn9    - Burn 09 Morning Room PM comparison (HTML, PDF, PNG)
-        overlay  - AeroTrak2 0.3-0.5 um coincidence overlay with zones
-        lag      - per-burn inter-room arrival lag (Bedroom 2 minus Morning Room)
-        modulair - Burn 06 MODULAIR-PM2 QA/QC time series with portal PM1 panel
+        burn9      - Burn 09 Morning Room PM comparison (HTML, PDF, PNG)
+        overlay    - AeroTrak2 0.3-0.5 um coincidence overlay with zones
+        lag        - per-burn inter-room arrival lag (Bedroom 2 minus Morning Room)
+        r_sub      - per-burn Bedroom 2 / Morning Room PM3 ratio, both < 500 ug/m3
+        bracketing - Burn 09 Morning Room raw readings and corrected bracket
+        modulair   - Burn 06 MODULAIR-PM2 QA/QC time series with portal PM1 panel
     The full scripts also rewrite their CSV, HTML, and other PNG outputs; this
     entry point loads only what each figure needs and writes nothing else.
     Outputs are ISO-dated; an existing same-day file raises unless --overwrite.
@@ -24,6 +26,7 @@ Created: 2026-10-16
 
 Update log:
     2026-10-16: Initial version.
+    2026-10-16: Added r_sub and bracketing figures.
 """
 
 import argparse
@@ -38,7 +41,7 @@ import pandas as pd
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-FIGURES = ("burn9", "overlay", "lag", "modulair")
+FIGURES = ("burn9", "overlay", "lag", "r_sub", "bracketing", "modulair")
 
 
 def make_burn9(overwrite):
@@ -81,6 +84,36 @@ def make_lag(overwrite):
     return svp.plot_arrival_lag(aerotrak_full, svp.OUTPUT_DIR, overwrite=overwrite)
 
 
+def make_r_sub(overwrite):
+    """Reliable-regime room ratio R_sub (spatial_variation_analysis_plot)."""
+    from src import spatial_variation_analysis_plot as svp
+
+    aerotrak_full, _ = svp.load_spatial_variation_data(svp.EXCEL_FILE_PATH)
+    return svp.plot_r_sub(aerotrak_full, svp.OUTPUT_DIR, overwrite=overwrite)
+
+
+def make_bracketing(overwrite):
+    """Burn 09 Morning Room bracketing figure (bracketing)."""
+    from src import bracketing as br
+    from src.aerotrak_coincidence import _load_aerotrak_all
+
+    loc = br.EXAMPLE_LOC
+    instrument = "AeroTrak2" if loc == "morning_room" else "AeroTrak1"
+    example = br.analyze_pair(
+        br.EXAMPLE_BURN,
+        loc,
+        br.load_event_times(),
+        br._load_dusttrak(),
+        {loc: _load_aerotrak_all(instrument)},
+        br._load_purpleair(),
+        br._load_reversal_flags(),
+        br._load_qaqc_windows(),
+    )
+    return br._fig_burn09_bars(
+        example, br.get_common_file("bracketing_figures"), overwrite=overwrite
+    )
+
+
 def make_modulair(overwrite):
     """Burn 06 MODULAIR-PM2 QA/QC time series (modulair_5sec_peak_window)."""
     from src import modulair_5sec_peak_window as mp
@@ -96,6 +129,8 @@ BUILDERS = {
     "burn9": make_burn9,
     "overlay": make_overlay,
     "lag": make_lag,
+    "r_sub": make_r_sub,
+    "bracketing": make_bracketing,
     "modulair": make_modulair,
 }
 

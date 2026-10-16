@@ -34,11 +34,15 @@ Outputs:
     bracketing_analysis/bracketing_cross_burn_summary.csv
     bracketing_analysis/bracketing_burn09_sensitivity.csv
     bracketing_analysis/bracketing_summary.md
-    bracketing_figures/bracketing_burn09_morning_room.png
+    bracketing_figures/YYYY-MM-DD_bracketing_burn09_morning_room.pdf/.png
     bracketing_figures/bracketing_cross_burn.png
 
 Author: Nathan Lima
 Created: 2026-06-26
+Update log:
+    2026-10-16: Burn 09 worked-example figure moved to the shared journal
+        style at 6.00 x 4.25 in (20 % wider, same height) with the Burn 09
+        comparison instrument colors and ISO-dated PDF/PNG output.
 """
 
 import sys
@@ -64,6 +68,14 @@ from src.fig_style import (  # noqa: E402
     save_fig,
 )
 from src.modulair_5sec_io import BURN_DATES, load_event_times, load_portal_burn  # noqa: E402
+from src.plot_style import figsize as journal_figsize  # noqa: E402
+from src.project_style import (  # noqa: E402
+    AXIS_LABELS,
+    INSTRUMENT_COLORS,
+    dated_stem,
+    journal_style,
+    save_pdf_png,
+)
 
 # ==============================================================================
 # CONSTANTS
@@ -626,17 +638,26 @@ def _write_sensitivity(sens: pd.DataFrame, out_dir: Path) -> None:
 # ==============================================================================
 
 
-def _fig_burn09_bars(example: dict, fig_dir: Path) -> None:
+def _fig_burn09_bars(example: dict, fig_dir: Path, overwrite: bool = False) -> list:
     """
     Worked-example bar figure: one horizontal bar per instrument showing the
     raw reading (point) and the corrected range (shaded band). DustTrak labeled
     with the correction-factor source; AeroTrak labeled with the density range
-    and the suppression flag if present. Intended for main text (Figure 4).
+    and the suppression flag if present. Intended for main text (Figure 4) and
+    the AAAR poster.
 
-    Raw-value labels are placed to the LEFT of each point (ha="right") so they
-    cannot collide with the corrected band that extends to the point's right,
-    and the x-limits carry headroom so no text leaves the axes.
+    Raw-value labels sit below each point and correction notes above it, and
+    the x-limits carry headroom so no text leaves the axes. Uses the shared
+    journal style at 6.00 x 4.25 in (20 % wider than the earlier 5.00 in
+    version at the same height), with the instrument colors of the Burn 09
+    time-series comparison, and writes an ISO-dated PDF and 600 dpi PNG.
+
+    Returns
+    -------
+    list of Path
+        Files written.
     """
+    aerotrak_name = "AeroTrak2" if example.get("location") == "morning_room" else "AeroTrak1"
     dt = example["dusttrak_ug"]
     at = example["aerotrak_pm3_ug"]
     pa = example["purpleair_pm25_ug"]
@@ -651,7 +672,7 @@ def _fig_burn09_bars(example: dict, fig_dir: Path) -> None:
             dt,
             example["mass_upper_low"],
             example["mass_upper_high"],
-            ROLE_COLORS["DustTrak"],
+            INSTRUMENT_COLORS["DustTrak"],
             "corrected /1.6 to /4\n(McNamara 2011; Delp & Singer 2020)",
         )
     )
@@ -660,11 +681,11 @@ def _fig_burn09_bars(example: dict, fig_dir: Path) -> None:
         at_note += "\nCh1 reversal: true value likely higher"
     bars.append(
         (
-            "AeroTrak\n(OPC, PM3)",
+            f"{aerotrak_name}\n(OPC, PM3)",
             at,
             example["mass_lower_low"],
             example["mass_lower_high"],
-            ROLE_COLORS["OPC-N3"],
+            INSTRUMENT_COLORS["AeroTrak2"],
             at_note,
         )
     )
@@ -675,7 +696,7 @@ def _fig_burn09_bars(example: dict, fig_dir: Path) -> None:
                 pa,
                 example["mass_mid_low"],
                 example["mass_mid_high"],
-                ROLE_COLORS["PurpleAir"],
+                INSTRUMENT_COLORS["PurpleAir"],
                 "corrected /1.6 to /2.1\n(Delp & Singer 2020; Barkjohn et al. 2022)",
             )
         )
@@ -689,60 +710,65 @@ def _fig_burn09_bars(example: dict, fig_dir: Path) -> None:
                 mod,
                 np.nan,
                 np.nan,
-                ROLE_COLORS["PMS5003"],
+                INSTRUMENT_COLORS["MODULAIR-PM2"],
                 "QA/QC-bounded (Section 3.2.3)",
             )
         )
 
-    fig, ax = plt.subplots(figsize=figsize("onehalf", aspect=0.85))
-    y_positions = list(range(len(bars)))[::-1]
+    with journal_style():
+        fig, ax = plt.subplots(figsize=journal_figsize(6.0, aspect=4.25 / 6.0))
+        y_positions = list(range(len(bars)))[::-1]
 
-    # x-range with headroom: low end below the smallest value, high end with
-    # room for the right-hand correction-factor annotations on a log axis.
-    all_vals = [v for b in bars for v in (b[1], b[2], b[3]) if not np.isnan(v)]
-    x_lo = min(all_vals) / 4.0
-    x_hi = max(all_vals) * 4.0
-    ax.set_xlim(x_lo, x_hi)
+        # x-range with headroom: low end below the smallest value, high end
+        # with room for the correction-factor annotations on a log axis.
+        all_vals = [v for b in bars for v in (b[1], b[2], b[3]) if not np.isnan(v)]
+        x_lo = min(all_vals) / 4.0
+        x_hi = max(all_vals) * 4.0
+        ax.set_xlim(x_lo, x_hi)
 
-    # All correction-factor notes are centered on the geometric midpoint of the
-    # log x-range (the visual center of the axes), so they stack in a single
-    # column and never run off either side regardless of each bar's value.
-    note_x_center = np.sqrt(x_lo * x_hi)
+        # All correction-factor notes are centered on the geometric midpoint of
+        # the log x-range (the visual center of the axes), so they stack in a
+        # single column and never run off either side regardless of each
+        # bar's value.
+        note_x_center = np.sqrt(x_lo * x_hi)
 
-    for y, (label, raw, lo, hi, color, note) in zip(y_positions, bars):
-        has_band = not (np.isnan(lo) or np.isnan(hi))
-        if has_band:
-            # Corrected range as a shaded band.
-            ax.barh(
-                y, hi - lo, left=lo, height=0.45, color=color, alpha=0.30,
-                edgecolor=color, linewidth=1.2,
+        for y, (label, raw, lo, hi, color, note) in zip(y_positions, bars):
+            has_band = not (np.isnan(lo) or np.isnan(hi))
+            if has_band:
+                # Corrected range as a shaded band.
+                ax.barh(
+                    y, hi - lo, left=lo, height=0.45, color=color, alpha=0.30,
+                    edgecolor=color, linewidth=0.75,
+                )
+            # Raw instrument reading as a point.
+            ax.plot(raw, y, "o", color=color, markersize=5, zorder=5)
+            # Raw-value label below the point so it never overlaps the band or
+            # the correction note placed above. Black text: the lighter Wong
+            # colors fall under the 4.5:1 text contrast ACS asks for.
+            ax.annotate(
+                f"raw {raw:,.0f}",
+                xy=(raw, y), xytext=(0, -7), textcoords="offset points",
+                ha="center", va="top",
             )
-        # Raw instrument reading as a point.
-        ax.plot(raw, y, "o", color=color, markersize=9, zorder=5)
-        # Raw-value label below the point so it never overlaps the band or the
-        # correction note placed above.
-        ax.annotate(
-            f"raw {raw:.0f}",
-            xy=(raw, y), xytext=(0, -11), textcoords="offset points",
-            ha="center", va="top", fontsize=_FS - 3, color=color,
-        )
-        # Correction-factor note centered on the shared x-axis midpoint, above
-        # the band/point so it clears the markers and any dashed bracket lines.
-        ax.annotate(
-            note,
-            xy=(note_x_center, y), xytext=(0, 12), textcoords="offset points",
-            ha="center", va="bottom", fontsize=_FS - 3, color="black",
-        )
+            # Correction-factor note centered on the shared x-axis midpoint and
+            # anchored to the band's top edge (half of the 0.45 band height),
+            # so it clears the band and markers at any figure size.
+            ax.annotate(
+                note,
+                xy=(note_x_center, y + 0.225), xytext=(0, 2), textcoords="offset points",
+                ha="center", va="bottom",
+            )
 
-    ax.set_yticks(y_positions)
-    ax.set_yticklabels([b[0] for b in bars], fontsize=_FS)
-    ax.set_ylim(-0.8, len(bars) - 0.2)
-    ax.set_xscale("log")
-    ax.set_xlabel("PM mass concentration (µg/m³)", fontsize=_FS)
-    ax.tick_params(axis="x", labelsize=_FS)
-    ax.grid(axis="x", ls=":", alpha=0.4)
+        ax.set_yticks(y_positions)
+        ax.set_yticklabels([b[0] for b in bars])
+        ax.set_ylim(-0.8, len(bars) - 0.2)
+        ax.set_xscale("log")
+        ax.set_xlabel(AXIS_LABELS["pm_mass"])
+        ax.grid(axis="x", ls=":", lw=0.5, alpha=0.5)
 
-    save_fig(fig, fig_dir / "bracketing_burn09_morning_room.png")
+        return save_pdf_png(
+            fig, dated_stem(fig_dir, "bracketing_burn09_morning_room"), overwrite=overwrite
+        )
 
 
 def _fig_cross_burn(df: pd.DataFrame, fig_dir: Path) -> None:

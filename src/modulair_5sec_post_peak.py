@@ -765,7 +765,7 @@ def _bokeh_pair(rec: dict, fig_dir: Path) -> None:
     """
     Three-panel Bokeh figure for one burn-unit pair (SI):
         top    = PMS5003 nephelometer bin 0 raw signal,
-        middle = OPC-N3 bins 0-2 raw counts,
+        middle = OPC-N3 bins 0-2 number concentration (#/cm3),
         bottom = co-located AeroTrak Ch1 (0.3-0.5 um) count concentration.
     All panels carry event lines and a shaded post-peak decay band.
 
@@ -793,19 +793,19 @@ def _bokeh_pair(rec: dict, fig_dir: Path) -> None:
                    title=f"{title}  -  PMS5003 neph bin0 raw signal", tools=_BOKEH_TOOLS)
     p_top.line(sub["timestamp"], pd.to_numeric(sub["neph_bin0"], errors="coerce"),
                color="#67000D", line_width=1.3)
-    p_top.yaxis.axis_label = "Neph bin0 raw"
+    p_top.yaxis.axis_label = "PMS5003 bin 0 (particles)"
     _decay_band(p_top, t0, t_end)
     _event_spans(p_top, rec)
 
     # --- middle: OPC-N3 bins 0-2 ---
     p_mid = figure(x_axis_type="datetime", width=1300, height=300, x_range=p_top.x_range,
-                   title="OPC-N3 bins 0-2 raw counts", tools=_BOKEH_TOOLS)
+                   title="OPC-N3 bins 0-2 number concentration", tools=_BOKEH_TOOLS)
     items = []
     for b in OPC_SMALL_BINS:
         r = p_mid.line(sub["timestamp"], pd.to_numeric(sub[b], errors="coerce"),
                        color=_OPC_FIG_COLORS[b], line_width=1.4)
         items.append(LegendItem(label=f"{b} ({_OPC_FIG_LABELS[b]})", renderers=[r]))
-    p_mid.yaxis.axis_label = "OPC raw counts"
+    p_mid.yaxis.axis_label = "OPC-N3 (#/cm³)"
     _decay_band(p_mid, t0, t_end)
     _event_spans(p_mid, rec)
     p_mid.add_layout(Legend(items=items, click_policy="hide", label_text_font_size="8pt"), "right")

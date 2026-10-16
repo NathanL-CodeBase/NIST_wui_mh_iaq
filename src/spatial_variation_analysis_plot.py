@@ -47,6 +47,9 @@ Update log:
         per-burn inter-room arrival-lag panel (100 and 50 ug/m^3 thresholds,
         zero reference, door-closed burns marked) and a per-burn reliable-regime
         R_sub panel (IQR whiskers, ratio=1 reference).
+    2026-10-16 (N. Lima): Arrival-lag figure moved to the shared journal style
+        (src/plot_style.py); lag now plotted as Bedroom 2 minus Morning Room
+        (positive = Morning Room first) with a one-line y-axis label.
 """
 
 import os
@@ -84,6 +87,14 @@ from src.fig_style import (  # noqa: E402
     apply_est_style,
     figsize,
     save_fig,
+)
+from src.plot_style import OKABE_ITO as JOURNAL_COLORS  # noqa: E402
+from src.plot_style import figsize as journal_figsize  # noqa: E402
+from src.project_style import (  # noqa: E402
+    AXIS_LABELS,
+    dated_stem,
+    journal_style,
+    save_pdf_png,
 )
 
 # Get portable paths
@@ -590,13 +601,17 @@ def _burn_sort_key(burn_id):
         return 999
 
 
-def plot_arrival_lag(aerotrak_df, output_dir):
+def plot_arrival_lag(aerotrak_df, output_dir, overwrite=False):
     """
     Static per-burn inter-room smoke arrival lag (AeroTrak PM3).
 
-    Plots arrival_lag_min at 100 and 50 ug/m^3 for each burn, with a zero
-    reference line (simultaneous arrival). Negative values mean the Morning Room
-    crossed the threshold first. Burns with the bedroom door closed are marked.
+    Plots the lag at 100 and 50 ug/m^3 for each burn as Bedroom 2 minus Morning
+    Room crossing time, so a positive value means smoke reached the Morning
+    Room first (the sign used in the manuscript). The spreadsheet stores
+    Morning Room minus Bedroom 2, so the stored values are negated here. A zero
+    line marks simultaneous arrival; burns with the bedroom door closed are
+    marked. Uses the shared journal style and writes an ISO-dated PDF and
+    600 dpi PNG.
 
     Parameters
     ----------
@@ -604,11 +619,18 @@ def plot_arrival_lag(aerotrak_df, output_dir):
         AeroTrak sheet with arrival_lag_min_100 / _50, bedroom_door_closed.
     output_dir : str
         Directory to write the figure into.
+    overwrite : bool
+        Replace same-day files instead of raising.
+
+    Returns
+    -------
+    list of Path
+        Files written (empty if skipped).
     """
     needed = {"arrival_lag_min_100", "arrival_lag_min_50"}
     if not needed.issubset(aerotrak_df.columns):
         print("  [skip] arrival-lag columns not present")
-        return
+        return []
 
     per_burn = aerotrak_df.drop_duplicates(subset="Burn_ID").copy()
     per_burn = per_burn.sort_values("Burn_ID", key=lambda s: s.map(_burn_sort_key))
@@ -619,57 +641,55 @@ def plot_arrival_lag(aerotrak_df, output_dir):
     ]
     if per_burn.empty:
         print("  [skip] no arrival-lag values to plot")
-        return
+        return []
 
-    labels = [str(b).replace("burn", "Burn ") for b in per_burn["Burn_ID"]]
+    # Bedroom 2 minus Morning Room: positive = Morning Room first.
+    lag_100 = -per_burn["arrival_lag_min_100"]
+    lag_50 = -per_burn["arrival_lag_min_50"]
+    print(
+        f"  Arrival lag @100 ug/m^3 (Bedroom 2 minus Morning Room): "
+        f"median {lag_100.median():+.1f} min, range {lag_100.min():+.1f} to "
+        f"{lag_100.max():+.1f} min, N={lag_100.notna().sum()}"
+    )
+
+    labels = [str(b).replace("burn", "") for b in per_burn["Burn_ID"]]
     x = np.arange(len(labels))
-    apply_est_style()
-    fig, ax = plt.subplots(figsize=figsize("onehalf", aspect=0.7))
+    with journal_style():
+        fig, ax = plt.subplots(figsize=journal_figsize("single", aspect=0.75))
 
-    ax.axhline(0.0, color=REF_LINE, lw=1.0, ls="--", zorder=1)
-    ax.scatter(
-        x - 0.08,
-        per_burn["arrival_lag_min_100"],
-        color=OKABE_ITO["blue"],
-        marker="o",
-        s=42,
-        label="100 ug/m3",
-        zorder=3,
-    )
-    ax.scatter(
-        x + 0.08,
-        per_burn["arrival_lag_min_50"],
-        color=OKABE_ITO["orange"],
-        marker="s",
-        s=42,
-        label="50 ug/m3",
-        zorder=3,
-    )
+        ax.axhline(0.0, color=REF_LINE, lw=0.5, ls="--", zorder=1)
+        ax.plot(
+            x - 0.1, lag_100, ls="none", marker="o", markersize=4,
+            color=JOURNAL_COLORS["blue"], label="100 µg/m³", zorder=3,
+        )
+        ax.plot(
+            x + 0.1, lag_50, ls="none", marker="s", markersize=4,
+            color=JOURNAL_COLORS["vermillion"], label="50 µg/m³", zorder=3,
+        )
 
-    # Mark door-closed burns under the x-axis label.
-    if "bedroom_door_closed" in per_burn.columns:
-        for xi, closed in zip(x, per_burn["bedroom_door_closed"]):
-            if bool(closed) is True:
-                ax.annotate(
-                    "door closed",
-                    xy=(xi, 0),
-                    xytext=(xi, 0.02),
-                    textcoords=("data", "axes fraction"),
-                    ha="center",
-                    va="bottom",
-                    fontsize=8,
-                    rotation=90,
-                    color=OKABE_ITO["vermillion"],
-                )
+        # Mark door-closed burns just above the x-axis.
+        if "bedroom_door_closed" in per_burn.columns:
+            for xi, closed in zip(x, per_burn["bedroom_door_closed"]):
+                if bool(closed) is True:
+                    ax.annotate(
+                        "door closed",
+                        xy=(xi, 0),
+                        xytext=(xi, 0.03),
+                        textcoords=("data", "axes fraction"),
+                        ha="center",
+                        va="bottom",
+                        rotation=90,
+                    )
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=45, ha="right")
-    ax.set_ylabel("Arrival lag (min)\nMorning Room minus Bedroom 2")
-    ax.legend(frameon=False, loc="best")
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels)
+        ax.set_xlabel("Burn")
+        ax.set_ylabel(AXIS_LABELS["arrival_lag_min"])
+        ax.legend(title="PM3 threshold", frameon=False, loc="best")
 
-    out = os.path.join(output_dir, "spatial_arrival_lag.png")
-    save_fig(fig, out)
-    print(f"  Saved arrival-lag figure to: {out}")
+        return save_pdf_png(
+            fig, dated_stem(output_dir, "spatial_arrival_lag"), overwrite=overwrite
+        )
 
 
 def plot_r_sub(aerotrak_df, output_dir, pm_size="PM3 (µg/m³)"):

@@ -1,0 +1,37 @@
+# journal.mplstyle
+# Matplotlib settings for manuscript figures. Default target: ACS ES&T Air.
+# Master copy: claude_config/skills/manuscript-figures/assets/journal.mplstyle
+# Project copy: <project>/src/journal.mplstyle (committed, loaded by src/plot_style.py)
+#
+# Hex colors carry no leading "#" in this file, because "#" starts a comment here.
+# The color cycle is the Wong palette and must match WONG in plot_style.py.
+# It is ordered by contrast against white: the first five colors meet 3:1,
+# and sky blue, orange, and yellow (the last three) do not.
+
+font.family: sans-serif
+font.sans-serif: Helvetica, Arial
+font.size: 8
+axes.labelsize: 8
+axes.titlesize: 8
+xtick.labelsize: 8
+ytick.labelsize: 8
+legend.fontsize: 8
+
+axes.linewidth: 0.5
+lines.linewidth: 1.0
+axes.spines.top: False
+axes.spines.right: False
+
+xtick.direction: in
+ytick.direction: in
+xtick.major.size: 3
+xtick.minor.size: 1.5
+ytick.major.size: 3
+ytick.minor.size: 1.5
+
+axes.prop_cycle: cycler('color', ['000000', '0072B2', 'D55E00', '009E73', 'CC79A7', '56B4E9', 'E69F00', 'F0E442'])
+
+figure.constrained_layout.use: True
+pdf.fonttype: 42
+ps.fonttype: 42
+savefig.dpi: 600

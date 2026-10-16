@@ -10,9 +10,12 @@ The on-instrument record logs one row every 5 seconds (0.2 Hz), not 5 Hz; the
 "5 s" naming throughout reflects that actual cadence.
 
 Raw 5 s channels exposed:
-    - OPC-N3 bins bin0..bin23 (0.35 to 40 um), raw counts per 5 s window
+    - OPC-N3 bins bin0..bin23 (0.35 to 40 um), number concentration (#/cm3):
+      the firmware divides each 5 s count by sample_flow x sample_period
     - PMS5003 nephelometer bins neph_bin0..neph_bin5 (size thresholds
-      > 0.3, > 0.5, > 1.0, > 2.5, > 5.0, > 10 um), raw signal values
+      > 0.3, > 0.5, > 1.0, > 2.5, > 5.0, > 10 um), whole-number particle
+      counts (QuantAQ manual unit "p"; the volume basis is not documented,
+      the PMS5003 native field is per 0.1 L, 16-bit ceiling 65535)
     - flag (bitmask, no QA/QC removal applied)
 
 Timestamps in both products are stored as UTC (ISO 8601 with 'Z'). The

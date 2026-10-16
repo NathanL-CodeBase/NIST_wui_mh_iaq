@@ -26,6 +26,9 @@ Outputs:
 Author: Nathan Lima
 Created: 2026-04-30
 Updated: 2026-07-07 (corrected coincidence-limit unit conversion; see CONSTANTS)
+Updated: 2026-10-16 (overlay moved to the shared journal style: one "Burn 2-10"
+    legend entry, rise/collapse/partial-recovery zones from the median reversal
+    interval, ISO-dated PDF and 600 dpi PNG output)
 """
 
 import sys
@@ -55,6 +58,18 @@ from src.fig_style import (  # noqa: E402
     apply_est_style,
     figsize,
     save_fig,
+)
+from matplotlib.lines import Line2D  # noqa: E402
+from matplotlib.patches import Patch  # noqa: E402
+from src.plot_style import OKABE_ITO  # noqa: E402
+from src.plot_style import figsize as journal_figsize  # noqa: E402
+from src.project_style import (  # noqa: E402
+    AXIS_LABELS,
+    LOCATION_COLORS,
+    NEUTRAL,
+    dated_stem,
+    journal_style,
+    save_pdf_png,
 )
 
 # ==============================================================================
@@ -102,6 +117,10 @@ REVERSAL_WIN_MIN = 30  # search window after n_peak (minutes)
 # least this contiguous span rejects those transients without hard-coding a
 # fixed onset time.
 REVERSAL_MIN_SUSTAIN_MIN = 8.0
+
+# Overlay zones: the collapse lasts while the cross-burn median 0.3-0.5 um
+# count stays below this fraction of its rise peak.
+COLLAPSE_FLOOR_FRAC = 0.10
 
 # Counts-conservation tolerance (fraction change allowed)
 CONSERVATION_TOL = 0.30
@@ -1339,97 +1358,191 @@ def bl_row_date_from_results(
 # ==============================================================================
 
 
-def _mpl_overlay(all_results: list[dict]) -> None:
+def _overlay_zones(at2: list[dict], grid: np.ndarray, med: np.ndarray) -> dict:
+    """
+    Rise, collapse, and partial-recovery zone bounds (minutes from ignition)
+    for the overlay, from the cross-burn medians of the detected reversal
+    interval rather than hand-picked times.
+
+    Rise: ignition to the median reversal onset. Collapse: median onset to the
+    last time the median trace sits below COLLAPSE_FLOOR_FRAC of its rise peak
+    before the median reversal end (first return above n_peak/2). Partial
+    recovery: from there to the maximum of the median trace after the reversal
+    end, where the recovered count tops out before the decay. Ending the
+    collapse at the n_peak/2 crossing alone left a 3 min recovery zone that
+    hid the climb back out of the trough.
+
+    Returns
+    -------
+    dict
+        {"Rise": (t0, t1), "Collapse": (t0, t1), "Partial recovery": (t0, t1)},
+        or {} if no AeroTrak2 burn had a complete reversal interval.
+    """
+    onsets, ends = [], []
+    for r in at2:
+        if not r.get("reversal_present"):
+            continue
+        ign = r["_ignition"]
+        if pd.notna(r.get("reversal_onset")) and pd.notna(r.get("reversal_end")):
+            onsets.append((r["reversal_onset"] - ign).total_seconds() / 60.0)
+            ends.append((r["reversal_end"] - ign).total_seconds() / 60.0)
+    if not onsets:
+        return {}
+    t_on = float(np.median(onsets))
+    t_end = float(np.median(ends))
+    after = (grid >= t_end) & np.isfinite(med)
+    t_rec = float(grid[after][int(np.nanargmax(med[after]))]) if after.any() else t_end
+
+    # Collapse ends where the median trace last sits in the trough (below
+    # COLLAPSE_FLOOR_FRAC of the rise peak) before the reversal end.
+    rise = (grid >= 0.0) & (grid <= t_on) & np.isfinite(med)
+    t_trough_end = t_end
+    if rise.any():
+        floor = COLLAPSE_FLOOR_FRAC * float(np.nanmax(med[rise]))
+        in_trough = (grid > t_on) & (grid <= t_end) & np.isfinite(med) & (med < floor)
+        if in_trough.any():
+            t_trough_end = float(grid[in_trough][-1])
+
+    zones = {
+        "Rise": (0.0, t_on),
+        "Collapse": (t_on, t_trough_end),
+        "Partial recovery": (t_trough_end, t_rec),
+    }
+    print(
+        f"    [overlay zones] n={len(onsets)} burns; "
+        + "; ".join(f"{k} {a:.1f}-{b:.1f} min" for k, (a, b) in zones.items())
+    )
+    return zones
+
+
+def _mpl_overlay(all_results: list[dict], out_dir=None, overwrite: bool = False) -> list:
     """
     Single panel: all AeroTrak2 (Morning Room) burns overlaid. Ch1 count
     (#/cm3) vs minutes from ignition (a fixed physical event, so the rising
     edge aligns across burns instead of smearing on a ragged t_peak). Log
-    y-axis. Individual burns are drawn faint; a bold median trace with a
-    shaded IQR band summarises the typical reversal shape through the
-    spaghetti.
+    y-axis. Individual burns are drawn faint gray under one legend entry; a
+    bold median trace with a shaded IQR band summarises the typical reversal
+    shape, and shaded zones mark the rise, collapse, and partial recovery.
+
+    Uses the shared journal style (src/plot_style.py) and writes an ISO-dated
+    PDF and 600 dpi PNG.
+
+    Parameters
+    ----------
+    all_results : list of dict
+        Output of analyze_burn_instrument for every burn-instrument pair.
+    out_dir : str or Path, optional
+        Output folder; defaults to the coincidence_figures folder.
+    overwrite : bool
+        Replace same-day files instead of raising.
+
+    Returns
+    -------
+    list of Path
+        Files written (empty if no AeroTrak2 results).
     """
     at2 = [
         r for r in all_results if r["instrument"] == "AeroTrak2" and pd.notna(r.get("_ignition"))
     ]
     if not at2:
         print("    [mpl] No AeroTrak2 results for overlay figure.")
-        return
+        return []
 
-    fig, ax = plt.subplots(figsize=figsize("double", aspect=0.6))
+    with journal_style():
+        fig, ax = plt.subplots(figsize=journal_figsize("double", aspect=0.5))
+        mr_color = LOCATION_COLORS["morning_room"]
 
-    all_burns_sorted = sorted(at2, key=lambda r: int(r["burn"].replace("burn", "")))
+        all_burns_sorted = sorted(at2, key=lambda r: int(r["burn"].replace("burn", "")))
+        burn_nums = [int(r["burn"].replace("burn", "")) for r in all_burns_sorted]
+        burns_label = f"Burn {min(burn_nums)}-{max(burn_nums)}"
 
-    # Common time grid (minutes from ignition) for the median/IQR summary.
-    # 1-minute resolution over the displayed window.
-    grid = np.arange(-15.0, MAX_WIN_HR * 60.0 + 1.0, 1.0)
-    interp_stack = []
+        # Common time grid (minutes from ignition) for the median/IQR summary.
+        # 1-minute resolution over the displayed window.
+        grid = np.arange(-15.0, MAX_WIN_HR * 60.0 + 1.0, 1.0)
+        interp_stack = []
 
-    for i, r in enumerate(all_burns_sorted):
-        df_day = r["_df_day"]
-        ignit = r["_ignition"]
-        burn_id = r["burn"]
+        for r in all_burns_sorted:
+            df_day = r["_df_day"]
+            ignit = r["_ignition"]
 
-        ch1 = next((c for c in df_day.columns if "Ʃ0.3-0.5µm" in c), None)
-        if ch1 is None:
-            continue
+            ch1 = next((c for c in df_day.columns if "Ʃ0.3-0.5µm" in c), None)
+            if ch1 is None:
+                continue
 
-        t_norm = (df_day["Date and Time"] - ignit).dt.total_seconds() / 60.0
-        vals = df_day[ch1].replace(0, np.nan)
+            t_norm = (df_day["Date and Time"] - ignit).dt.total_seconds() / 60.0
+            vals = df_day[ch1].replace(0, np.nan)
 
-        # Faint individual burn traces in neutral gray so the bold vermillion
-        # Morning Room summary (median + IQR) reads clearly through them.
-        ax.semilogy(t_norm, vals, color=SHADE, lw=0.8, label=burn_id, alpha=0.40)
+            # Faint gray burn traces so the vermillion median and IQR read
+            # through them; one legend entry covers all of them.
+            ax.semilogy(t_norm, vals, color=NEUTRAL, lw=0.5, alpha=0.6, zorder=2)
 
-        # Resample onto the common grid for the summary band. Mask points
-        # outside the burn's own time span so flat extrapolation does not bias
-        # the median at the edges.
-        t_arr = t_norm.to_numpy(dtype=float)
-        v_arr = vals.to_numpy(dtype=float)
-        order = np.argsort(t_arr)
-        t_arr, v_arr = t_arr[order], v_arr[order]
-        finite = np.isfinite(t_arr) & np.isfinite(v_arr)
-        if finite.sum() < 2:
-            continue
-        t_arr, v_arr = t_arr[finite], v_arr[finite]
-        gi = np.interp(grid, t_arr, v_arr, left=np.nan, right=np.nan)
-        interp_stack.append(gi)
+            # Resample onto the common grid for the summary band. Mask points
+            # outside the burn's own time span so flat extrapolation does not
+            # bias the median at the edges.
+            t_arr = t_norm.to_numpy(dtype=float)
+            v_arr = vals.to_numpy(dtype=float)
+            order = np.argsort(t_arr)
+            t_arr, v_arr = t_arr[order], v_arr[order]
+            finite = np.isfinite(t_arr) & np.isfinite(v_arr)
+            if finite.sum() < 2:
+                continue
+            t_arr, v_arr = t_arr[finite], v_arr[finite]
+            interp_stack.append(np.interp(grid, t_arr, v_arr, left=np.nan, right=np.nan))
 
-    # Median and IQR band across burns (ignoring NaN where a burn lacks data)
-    if interp_stack:
-        stack = np.vstack(interp_stack)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            med = np.nanmedian(stack, axis=0)
-            q25 = np.nanpercentile(stack, 25, axis=0)
-            q75 = np.nanpercentile(stack, 75, axis=0)
-        valid = np.isfinite(med)
-        ax.fill_between(
-            grid[valid],
-            q25[valid],
-            q75[valid],
-            color=COLOR["AeroTrak2"],
-            alpha=0.20,
-            label="IQR (across burns)",
-            zorder=4,
+        zones = {}
+        if interp_stack:
+            stack = np.vstack(interp_stack)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                med = np.nanmedian(stack, axis=0)
+                q25 = np.nanpercentile(stack, 25, axis=0)
+                q75 = np.nanpercentile(stack, 75, axis=0)
+            valid = np.isfinite(med)
+            ax.fill_between(
+                grid[valid], q25[valid], q75[valid], color=mr_color, alpha=0.20, lw=0, zorder=3
+            )
+            ax.semilogy(grid[valid], med[valid], color=mr_color, lw=1.5, zorder=5)
+            zones = _overlay_zones(all_burns_sorted, grid, med)
+
+        # Zones: light fills, dotted edges, and direct labels above the axes
+        # (left-aligned at each zone start) so they neither cover the data
+        # nor depend on color, and still read in greyscale.
+        zone_fill = {
+            "Rise": OKABE_ITO["skyblue"],
+            "Collapse": OKABE_ITO["purple"],
+            "Partial recovery": OKABE_ITO["green"],
+        }
+        for name, (z0, z1) in zones.items():
+            if z1 <= z0:
+                continue
+            ax.axvspan(z0, z1, color=zone_fill[name], alpha=0.15, lw=0, zorder=1)
+            ax.axvline(z1, color=NEUTRAL, lw=0.5, ls=":", zorder=1)
+            ax.text(
+                z0 + 0.5,
+                1.01,
+                name,
+                transform=ax.get_xaxis_transform(),
+                ha="left",
+                va="bottom",
+            )
+
+        ax.axvline(0, color=REF_LINE, lw=1.0, ls="--", zorder=4)
+        ax.set_xlim(-15, MAX_WIN_HR * 60)
+        ax.set_xlabel(AXIS_LABELS["time_from_ignition_min"])
+        ax.set_ylabel(AXIS_LABELS["aerotrak_ch1"])
+
+        handles = [
+            Line2D([0], [0], color=NEUTRAL, lw=0.8, label=burns_label),
+            Patch(color=mr_color, alpha=0.20, lw=0, label="IQR across burns"),
+            Line2D([0], [0], color=mr_color, lw=1.5, label="Median"),
+            Line2D([0], [0], color=REF_LINE, lw=1.0, ls="--", label="Ignition"),
+        ]
+        ax.legend(handles=handles, loc="lower right", frameon=False)
+
+        out_dir = out_dir or get_common_file("coincidence_figures")
+        return save_pdf_png(
+            fig, dated_stem(out_dir, "aerotrak_coincidence_overlay"), overwrite=overwrite
         )
-        ax.semilogy(
-            grid[valid],
-            med[valid],
-            color=COLOR["AeroTrak2"],
-            lw=2.6,
-            label="Median",
-            zorder=5,
-        )
-
-    ax.axvline(0, color=REF_LINE, lw=1.0, ls="--", label="Ignition")
-    ax.set_xlim(-15, MAX_WIN_HR * 60)
-    ax.set_xlabel("Minutes from ignition", fontsize=_FS)
-    ax.set_ylabel("0.3-0.5 µm count (#/cm³)", fontsize=_FS)
-    ax.tick_params(labelsize=_FS)
-    ax.legend(fontsize=_FS - 2, ncol=2, loc="lower right")
-
-    fig_dir = get_common_file("coincidence_figures")
-    save_fig(fig, fig_dir / "aerotrak_coincidence_overlay.png")
 
 
 # ==============================================================================

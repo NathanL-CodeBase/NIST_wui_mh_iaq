@@ -102,6 +102,9 @@ Update log:
         R_sub on the MODULAIR PM2.5 series (Edit 4). The MODULAIR R_sub carries a
         QA/QC-bound caveat: it is only meaningful where both MODULAIR units
         operated below their Section 3.2.3 bound.
+    2026-10-16 (N. Lima): Section 3.3 text printout now reports the arrival lag
+        as Bedroom 2 minus Morning Room (positive = Morning Room first). The
+        stored arrival_lag_min_* columns keep their original sign.
 """
 
 import os
@@ -1514,11 +1517,14 @@ def analyze_spatial_variation():
         # One value per burn; collapse to per-burn before summarizing.
         per_burn = aerotrak_df.drop_duplicates(subset="Burn_ID")
 
-        lag100 = per_burn["arrival_lag_min_100"].dropna()
+        # Stored as t_MorningRoom - t_Bed2; report Bedroom 2 minus Morning Room
+        # so a positive lag means the Morning Room crossed first, matching the
+        # manuscript and the arrival-lag figure.
+        lag100 = -per_burn["arrival_lag_min_100"].dropna()
         if not lag100.empty:
             print(
-                f"\nArrival lag @100 ug/m^3 (t_MorningRoom - t_Bed2, "
-                f"negative = Morning Room first):"
+                f"\nArrival lag @100 ug/m^3 (t_Bed2 - t_MorningRoom, "
+                f"positive = Morning Room first):"
             )
             print(
                 f"  median={lag100.median():+.1f} min, "
@@ -1528,8 +1534,8 @@ def analyze_spatial_variation():
             if "bedroom_door_closed" in per_burn.columns:
                 closed = per_burn[per_burn["bedroom_door_closed"] == True]
                 for _, row in closed.iterrows():
-                    l100 = row["arrival_lag_min_100"]
-                    l50 = row["arrival_lag_min_50"]
+                    l100 = -row["arrival_lag_min_100"]
+                    l50 = -row["arrival_lag_min_50"]
                     l100_s = f"{l100:+.1f} min" if pd.notna(l100) else "no crossing"
                     l50_s = f"{l50:+.1f} min" if pd.notna(l50) else "no crossing"
                     print(

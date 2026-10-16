@@ -28,6 +28,12 @@ Outputs (under common_folders quantaq_analysis / quantaq_figures):
 
 Author: Nathan Lima
 Created: 2026-06-25
+Update log:
+    2026-10-16: Figure 2 QA/QC time series moved to the shared journal style
+        with a new top panel of 1-min portal PM1 and units on every axis.
+        OPC-N3 bin labels corrected to #/cm3 (the SD-card bins are counts
+        divided by sample_flow x sample_period, per the QuantAQ manual and
+        the data); nephelometer bins labeled as particles.
 """
 
 import sys
@@ -68,6 +74,15 @@ from src.modulair_5sec_io import (  # noqa: E402
     load_5sec_burn,
     load_event_times,
     load_portal_burn,
+)
+from src.plot_style import OKABE_ITO as JOURNAL_COLORS  # noqa: E402
+from src.plot_style import figsize as journal_figsize  # noqa: E402
+from src.project_style import (  # noqa: E402
+    AXIS_LABELS,
+    NEUTRAL,
+    dated_stem,
+    journal_style,
+    save_pdf_png,
 )
 
 # ==============================================================================
@@ -924,7 +939,7 @@ def _bokeh_pair(rec: dict, t_pad_min: float = 30.0) -> None:
 
     Top: PMS5003 nephelometer raw signal (all six bins) with a horizontal
     plateau marker at the detected saturation value. Bottom: OPC-N3 bins 0-6
-    raw counts. Both panels share the x-axis and carry event lines for
+    number concentration (#/cm3). Both panels share the x-axis and carry event lines for
     ignition, garage closure, PAC activation, and peak-window start/end.
 
     Output: quantaq_figures/modulair_5sec_peak_<burn>_<unit>.html
@@ -983,7 +998,7 @@ def _bokeh_pair(rec: dict, t_pad_min: float = 30.0) -> None:
                 y_offset=3,
             )
         )
-    p_top.yaxis.axis_label = "Neph raw signal"
+    p_top.yaxis.axis_label = "PMS5003 (particles)"
     _event_spans(p_top, rec)
     p_top.add_layout(
         Legend(items=items_top, click_policy="hide", label_text_font_size="8pt"), "right"
@@ -995,7 +1010,7 @@ def _bokeh_pair(rec: dict, t_pad_min: float = 30.0) -> None:
         width=1400,
         height=420,
         x_range=p_top.x_range,
-        title="OPC-N3 bins 0-6 raw counts",
+        title="OPC-N3 bins 0-6 number concentration",
         tools=_BOKEH_TOOLS,
     )
     items_bot = []
@@ -1006,7 +1021,7 @@ def _bokeh_pair(rec: dict, t_pad_min: float = 30.0) -> None:
             sub["timestamp"], pd.to_numeric(sub[b], errors="coerce"), color=color, line_width=1.4
         )
         items_bot.append(LegendItem(label=b, renderers=[r]))
-    p_bot.yaxis.axis_label = "OPC raw counts"
+    p_bot.yaxis.axis_label = "OPC-N3 (#/cm³)"
     p_bot.xaxis.axis_label = "Local time (EDT)"
     _event_spans(p_bot, rec)
     p_bot.add_layout(
@@ -1117,7 +1132,7 @@ def _mpl_bin_response_grid(results: list[dict]) -> None:
 
     # Shared axis labels and one legend.
     fig.supxlabel("OPC-N3 bin lower edge (µm)", fontsize=_FS)
-    fig.supylabel("OPC-N3 count concentration (counts per 5 s)", fontsize=_FS)
+    fig.supylabel("OPC-N3 number concentration (#/cm³)", fontsize=_FS)
 
     from matplotlib.lines import Line2D
 
@@ -1160,22 +1175,39 @@ def _mpl_bin_response_grid(results: list[dict]) -> None:
 # ==============================================================================
 
 
-def _mpl_qaqc_timeseries_fig2(results: list[dict]) -> None:
+def _mpl_qaqc_timeseries_fig2(results: list[dict], out_dir=None, overwrite: bool = False) -> list:
     """
     Figure 2 (main text, double column): FIG2_BURN MODULAIR-PM2 (Morning Room)
-    5 s time series over the peak window, three aligned-time panels showing
-    that the saturated nephelometer, the suppressed OPC-N3 bin 0, and the
-    portal QA/QC removal interval coincide:
-        (a) PMS5003 neph_bin0 raw with the 65535 ceiling marked;
-        (b) OPC-N3 bin0 raw counts (the suppression);
-        (c) a strip marking the 5 s peak-window span and the portal QA/QC
-            removal interval.
+    time series over the peak window, aligned-time panels showing that the
+    portal data gap, the saturated nephelometer, the suppressed OPC-N3 bin 0,
+    and the portal QA/QC removal interval coincide:
+        (a) 1-min QA/QC-processed portal PM1 (ug/m3), with the removed minutes
+            left as a gap;
+        (b) 5 s PMS5003 neph_bin0 (particles) with the 65535 ceiling marked;
+        (c) 5 s OPC-N3 bin0 number concentration (#/cm3), the suppression;
+        strip: the 5 s peak-window span and the portal QA/QC removal interval.
 
     The worked example is Burn 06 (see FIG2_BURN): its portal removal falls
     fully inside the saturated, bin-0 suppressed window on the shared clock.
+    Uses the shared journal style and writes an ISO-dated PDF and 600 dpi PNG.
+
+    Parameters
+    ----------
+    results : list of dict
+        Output of analyze_pair for every burn-unit pair.
+    out_dir : str or Path, optional
+        Output folder; defaults to the quantaq_figures folder.
+    overwrite : bool
+        Replace same-day files instead of raising.
+
+    Returns
+    -------
+    list of Path
+        Files written (empty if the example record is unavailable).
     """
-    burn_no = FIG2_BURN.replace("burn", "").zfill(2)
-    loc_label = UNIT_CONFIG[FIG2_UNIT]["location_label"]
+    import matplotlib.dates as mdates
+    from matplotlib.patches import Patch
+
     rec = next(
         (
             r
@@ -1186,7 +1218,7 @@ def _mpl_qaqc_timeseries_fig2(results: list[dict]) -> None:
     )
     if rec is None or pd.isna(rec.get("t_peak_start")):
         print(f"    [mpl] {FIG2_BURN} {FIG2_UNIT} not available for QA/QC time series.")
-        return
+        return []
 
     df = rec["_df"]
     t0 = rec["t_peak_start"]
@@ -1202,77 +1234,108 @@ def _mpl_qaqc_timeseries_fig2(results: list[dict]) -> None:
     sub = df[(df["timestamp"] >= t_lo) & (df["timestamp"] <= t_hi)].copy()
     if sub.empty:
         print(f"    [mpl] {FIG2_BURN} {FIG2_UNIT} window empty for QA/QC time series.")
-        return
+        return []
 
     ts = sub["timestamp"]
-    color = UNIT_COLOR[FIG2_UNIT]
+    portal = rec.get("_portal")
+    if portal is not None and "pm1" in portal.columns:
+        p_sub = portal[(portal["timestamp"] >= t_lo) & (portal["timestamp"] <= t_hi)]
+    else:
+        p_sub = None
+        print(f"    [mpl] {FIG2_BURN} {FIG2_UNIT}: no portal PM1; top panel left empty.")
 
-    fig, axes = plt.subplots(
-        3,
-        1,
-        figsize=(figsize("double")[0], 5.4),
-        sharex=True,
-        gridspec_kw={"height_ratios": [3, 3, 0.8]},
-    )
-    ax_neph, ax_opc, ax_strip = axes
-
-    # (a) Nephelometer bin0 with the 16-bit ceiling.
-    ax_neph.plot(
-        ts, pd.to_numeric(sub["neph_bin0"], errors="coerce"), color=ROLE_COLORS["PMS5003"], lw=1.2
-    )
-    ax_neph.axhline(NEPH_CEILING, color=REF_LINE, ls="--", lw=1.0)
-    ax_neph.annotate(
-        "16-bit ceiling (65535)",
-        xy=(ts.iloc[0], NEPH_CEILING),
-        xytext=(2, -10),
-        textcoords="offset points",
-        fontsize=_FS - 3,
-        color=REF_LINE,
-        va="top",
-    )
-    ax_neph.set_ylabel("PMS5003\nneph bin0", fontsize=_FS - 1)
-    # ax_neph.set_title(f"Burn {burn_no} {loc_label} ({FIG2_UNIT}): saturated "
-    #                  "nephelometer, suppressed OPC-N3 bin 0, and portal "
-    #                  "QA/QC removal coincide", fontsize=_FS - 1)
-
-    # (b) OPC-N3 bin0 suppression.
-    ax_opc.plot(ts, pd.to_numeric(sub["bin0"], errors="coerce"), color=color, lw=1.2)
-    ax_opc.set_ylabel("OPC-N3 bin0", fontsize=_FS - 1)
-
-    # (c) Peak-window span + portal QA/QC removal interval.
-    ax_strip.axvspan(t0, t1, ymin=0.55, ymax=0.95, color=color, alpha=0.35, label="5 s peak window")
-    if pd.notna(q0) and pd.notna(q1):
-        ax_strip.axvspan(
-            q0,
-            q1,
-            ymin=0.10,
-            ymax=0.50,
-            color=ROLE_COLORS["SMPS"],
-            alpha=0.6,
-            label="portal QA/QC removal",
+    with journal_style():
+        fig, axes = plt.subplots(
+            4,
+            1,
+            figsize=journal_figsize("double", aspect=0.85),
+            sharex=True,
+            gridspec_kw={"height_ratios": [2.2, 2.2, 2.2, 0.8]},
         )
-    ax_strip.set_yticks([])
-    ax_strip.set_ylabel("intervals", fontsize=_FS - 2)
-    ax_strip.legend(loc="lower right", fontsize=_FS - 3, frameon=True)
-    ax_strip.set_xlabel("Local time (EDT)", fontsize=_FS)
+        ax_pm1, ax_neph, ax_opc, ax_strip = axes
 
-    # Vertical guides at the peak-window bounds across the data panels.
-    for ax in (ax_neph, ax_opc):
-        ax.axvline(t0, color=SHADE, ls=":", lw=1.0)
-        ax.axvline(t1, color=SHADE, ls=":", lw=1.0)
-        ax.tick_params(labelsize=_FS - 2)
+        # (a) Portal 1-min PM1. Markers show each delivered minute, so the
+        # QA/QC-removed minutes read as a gap rather than an interpolated line.
+        if p_sub is not None and not p_sub.empty:
+            ax_pm1.plot(
+                p_sub["timestamp"],
+                pd.to_numeric(p_sub["pm1"], errors="coerce"),
+                color=REF_LINE,
+                lw=1.0,
+                marker="o",
+                markersize=3,
+            )
+        ax_pm1.set_ylabel(AXIS_LABELS["pm1"])
 
-    # Thin and rotate the shared x-axis time ticks so the EDT labels stop
-    # colliding on the narrow peak window.
-    import matplotlib.dates as mdates
+        # (b) Nephelometer bin0 with the 16-bit ceiling.
+        ax_neph.plot(
+            ts,
+            pd.to_numeric(sub["neph_bin0"], errors="coerce"),
+            color=JOURNAL_COLORS["vermillion"],
+            lw=1.0,
+        )
+        ax_neph.axhline(NEPH_CEILING, color=REF_LINE, ls="--", lw=0.5)
+        # Headroom above the ceiling holds its label at the right edge, clear
+        # of the panel letter and of the saturated trace.
+        ax_neph.set_ylim(0, NEPH_CEILING * 1.15)
+        ax_neph.annotate(
+            "16-bit ceiling (65,535)",
+            xy=(t_hi, NEPH_CEILING),
+            xytext=(-2, 2),
+            textcoords="offset points",
+            ha="right",
+            va="bottom",
+        )
+        ax_neph.set_ylabel(AXIS_LABELS["neph_bin0"])
 
-    locator = mdates.AutoDateLocator(minticks=3, maxticks=6)
-    ax_strip.xaxis.set_major_locator(locator)
-    ax_strip.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
-    fig.autofmt_xdate(rotation=30, ha="right")
+        # (c) OPC-N3 bin0 suppression.
+        ax_opc.plot(
+            ts, pd.to_numeric(sub["bin0"], errors="coerce"), color=JOURNAL_COLORS["blue"], lw=1.0
+        )
+        ax_opc.set_ylabel(AXIS_LABELS["opc_bin0"])
 
-    fig_dir = get_common_file("quantaq_figures")
-    save_fig(fig, fig_dir / f"modulair_5sec_qaqc_timeseries_{FIG2_BURN}.png")
+        # Strip: peak-window span and portal QA/QC removal interval. The
+        # removal bar is hatched so the two bars differ in greyscale too.
+        win_color = JOURNAL_COLORS["vermillion"]
+        ax_strip.axvspan(t0, t1, ymin=0.55, ymax=0.95, color=win_color, alpha=0.35, lw=0)
+        handles = [Patch(color=win_color, alpha=0.35, lw=0, label="5 s peak window")]
+        if pd.notna(q0) and pd.notna(q1):
+            ax_strip.axvspan(
+                q0, q1, ymin=0.10, ymax=0.50,
+                facecolor="white", edgecolor=REF_LINE, hatch="////", lw=0.5,
+            )
+            handles.append(
+                Patch(facecolor="white", edgecolor=REF_LINE, hatch="////", lw=0.5,
+                      label="Portal QA/QC removal")
+            )
+        ax_strip.set_yticks([])
+        ax_strip.spines["left"].set_visible(False)
+        ax_strip.legend(
+            handles=handles, loc="center left", bbox_to_anchor=(1.0, 0.5), frameon=False
+        )
+        ax_strip.set_xlabel(AXIS_LABELS["local_time"])
+
+        # Vertical guides at the peak-window bounds and panel letters.
+        for letter, ax in zip("abc", (ax_pm1, ax_neph, ax_opc)):
+            ax.axvline(t0, color=NEUTRAL, ls=":", lw=0.5)
+            ax.axvline(t1, color=NEUTRAL, ls=":", lw=0.5)
+            ax.text(
+                0.005, 0.97, letter, transform=ax.transAxes, fontweight="bold",
+                ha="left", va="top",
+            )
+
+        # Thin the shared x-axis time ticks so the EDT labels do not collide
+        # on the narrow peak window.
+        locator = mdates.AutoDateLocator(minticks=3, maxticks=6)
+        ax_strip.xaxis.set_major_locator(locator)
+        ax_strip.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+        ax_strip.set_xlim(t_lo, t_hi)
+
+        out_dir = out_dir or get_common_file("quantaq_figures")
+        return save_pdf_png(
+            fig, dated_stem(out_dir, f"modulair_5sec_qaqc_timeseries_{FIG2_BURN}"),
+            overwrite=overwrite,
+        )
 
 
 def _mpl_qaqc_overlap(results: list[dict]) -> None:

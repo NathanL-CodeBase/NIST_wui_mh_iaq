@@ -21,7 +21,8 @@ Workflow:
 
 Outputs:
     - peak_concentrations_all_instruments.xlsx: Peak values for all burns
-    - {burn_id}_PM25_comparison.html: Interactive time series plot
+    - YYYY-MM-DD_{burn_id}_PM25_comparison_morning_room.html/.pdf/.png:
+      Morning Room time series (interactive HTML, journal-style PDF and PNG)
 
 Configuration:
     - BURN_TO_PLOT: Selected burn for visualization (default: "burn9")
@@ -34,6 +35,11 @@ Notes:
 
 Author: Nathan Lima
 Date: 2025
+Update log:
+    2026-10-16: Burn comparison now plots the Morning Room instruments only
+        (rooms argument), labels units 1/2 (AeroTrak2, MODULAIR-PM2), uses the
+        shared Wong palette with a line style per instrument, saves the HTML
+        instead of opening it, and adds a static journal-style PDF/PNG.
 """
 
 # %% IMPORT MODULES
@@ -43,9 +49,13 @@ import traceback
 from pathlib import Path
 import pandas as pd
 import numpy as np
-from bokeh.plotting import figure, show
-from bokeh.io import output_notebook, output_file
-from bokeh.models import ColumnDataSource, Range1d, Div
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from bokeh.plotting import figure, save
+from bokeh.io import output_file
+from bokeh.models import Range1d, Div
 from bokeh.layouts import column
 
 # Add repository root to path for portable data access
@@ -54,14 +64,22 @@ repo_root = script_dir.parent
 sys.path.insert(0, str(repo_root))
 
 from src.data_paths import get_data_root, get_instrument_path, get_common_file
+from src.plot_style import apply_bokeh_text, series_style
+from src.plot_style import figsize as journal_figsize
+from src.project_style import (
+    AXIS_LABELS,
+    INSTRUMENT_COLORS,
+    INSTRUMENT_LINESTYLES,
+    REF_LINE,
+    dated_stem,
+    journal_style,
+    save_pdf_png,
+)
 
 
 # Set the absolute path for the dataset
 data_root = get_data_root()  # Portable path - auto-configured
 os.chdir(str(data_root))
-
-# Set output to display plots in the notebook
-output_notebook()
 
 # Import utils
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -819,6 +837,33 @@ def determine_instrument_location(instrument, burn_id):
         return "unknown"
 
 
+# Legend names in the manuscript's 1/2 unit numbering (1 = Bedroom 2,
+# 2 = Morning Room). The K/B suffixes are internal config keys only.
+LEGEND_NAMES = {
+    "AeroTrakB": "AeroTrak1",
+    "AeroTrakK": "AeroTrak2",
+    "QuantAQB": "MODULAIR-PM1",
+    "QuantAQK": "MODULAIR-PM2",
+    "PurpleAirK": "PurpleAir",
+    "DustTrak": "DustTrak",
+    "SMPS": "SMPS",
+}
+
+# Drawing and legend order: roughly highest to lowest peak, so the legend
+# reads top-down like the traces.
+COMPARISON_ORDER = [
+    "DustTrak",
+    "PurpleAirK",
+    "AeroTrakK",
+    "QuantAQK",
+    "AeroTrakB",
+    "QuantAQB",
+    "SMPS",
+]
+
+_BOKEH_DASH = {"-": "solid", "--": "dashed", "-.": "dashdot", ":": "dotted"}
+
+
 def get_pm25_equivalent_pollutant(instrument):
     """Get the appropriate PM2.5 equivalent pollutant for each instrument"""
     if instrument.startswith("AeroTrak"):
@@ -829,58 +874,42 @@ def get_pm25_equivalent_pollutant(instrument):
         return "PM2.5 (µg/m³)"  # Use PM2.5 for others
 
 
-def plot_burn_comparison(burn_to_plot=BURN_TO_PLOT, script_metadata=None):
-    """Plot PM2.5 equivalent data for all instruments for a single burn
+def _collect_burn_traces(burn_to_plot, rooms):
+    """Load the PM2.5-equivalent trace of each instrument for one burn.
 
     Args:
-        burn_to_plot: Burn ID to plot (e.g., "burn9")
-        script_metadata: Optional metadata string to include in the figure
+        burn_to_plot: Burn ID (e.g., "burn9").
+        rooms: Locations to keep, as returned by determine_instrument_location
+            ("kitchen" is the Morning Room, "bedroom" is Bedroom 2).
 
     Returns:
-        Bokeh column layout with plot and metadata
+        Tuple (traces, events). traces is a list of dicts with keys
+        "instrument", "label", "location", "pollutant", "t_h", "y", in
+        COMPARISON_ORDER. events maps "Garage closed" and "CR Box on" to
+        hours since garage closure (CR Box on omitted if not logged). Returns
+        (None, None) if the burn is not in the burn log.
     """
-    print(f"Creating comparison plot for {burn_to_plot}...")
-
-    # Get burn date
     burn_row = burn_log[burn_log["Burn ID"] == burn_to_plot]
     if burn_row.empty:
         print(f"Burn {burn_to_plot} not found in burn log")
-        return
+        return None, None
 
     burn_date = pd.to_datetime(burn_row["Date"].iloc[0])
     garage_closed_time_str = burn_row["garage closed"].iloc[0]
     garage_closed_time = create_naive_datetime(burn_date.date(), garage_closed_time_str)
 
-    # Create plot
-    p = figure(
-        x_axis_label="Time Since Garage Closed (hours)",
-        y_axis_label="PM Concentration (µg/m³)",
-        x_axis_type="linear",
-        y_axis_type="log",
-        width=800,
-        height=500,
-        x_range=Range1d(-1, 4),
-        y_range=Range1d(10**-1, 10**5),
-        # title=f'{burn_to_plot} PM2.5-equivalent comparison across instruments'
-    )
+    events = {"Garage closed": 0.0}
+    cr_box_on_time_str = burn_row["CR Box on"].iloc[0]
+    if pd.notna(cr_box_on_time_str):
+        cr_box_on_time = create_naive_datetime(burn_date.date(), cr_box_on_time_str)
+        if pd.notna(cr_box_on_time) and pd.notna(garage_closed_time):
+            events["CR Box on"] = (cr_box_on_time - garage_closed_time).total_seconds() / 3600
 
-    # Define colors for instruments
-    colors = [
-        "#ef5675",
-        "#d45087",
-        "#b35093",
-        "#8d5196",
-        "#665191",
-        "#404e84",
-        "#1d4772",
-        "#003f5c",
-    ]
-    color_idx = 0
-
-    # Process each instrument
-    for instrument, config in INSTRUMENT_CONFIG.items():
-        # Skip MiniAMS for the plot
-        if instrument == "MiniAMS":
+    traces = []
+    for instrument in COMPARISON_ORDER:
+        config = INSTRUMENT_CONFIG[instrument]
+        location = determine_instrument_location(instrument, burn_to_plot)
+        if location not in rooms:
             continue
 
         try:
@@ -951,78 +980,121 @@ def plot_burn_comparison(burn_to_plot=BURN_TO_PLOT, script_metadata=None):
             if time_filtered_data.empty or pollutant not in time_filtered_data.columns:
                 continue
 
-            # Determine line style based on location
-            location = determine_instrument_location(instrument, burn_to_plot)
-            line_dash = "dashed" if location == "bedroom" else "solid"
-
-            # Plot the data
-            source = ColumnDataSource(time_filtered_data)
-            p.line(
-                "Time Since Garage Closed (hours)",
-                pollutant,
-                source=source,
-                legend_label=f"{instrument}",  # ({location}) can be added if needed
-                line_width=2,
-                line_dash=line_dash,
-                color=colors[color_idx % len(colors)],
+            traces.append(
+                {
+                    "instrument": instrument,
+                    "label": LEGEND_NAMES[instrument],
+                    "location": location,
+                    "pollutant": pollutant,
+                    "t_h": time_filtered_data["Time Since Garage Closed (hours)"].to_numpy(),
+                    "y": pd.to_numeric(time_filtered_data[pollutant], errors="coerce").to_numpy(),
+                }
             )
-
-            color_idx += 1
-            print(f"Plotted {instrument} ({location}) - {pollutant}")
+            print(f"Loaded {instrument} ({location}) - {pollutant}")
 
         except (ValueError, TypeError, KeyError, AttributeError, IndexError) as e:
-            print(f"Error plotting {instrument}: {str(e)}")
+            print(f"Error loading {instrument}: {str(e)}")
             continue
 
-    # Add vertical line for garage closed (at time 0)
-    p.line(
-        x=[0, 0],
-        y=[10**-2, 10**6],
-        line_color="black",
-        line_width=1,
-        line_dash="solid",
-        legend_label="Garage Closed",
+    return traces, events
+
+
+def _trace_style(label, index):
+    """Color and line style for a comparison trace (project colors first)."""
+    if label in INSTRUMENT_COLORS:
+        return INSTRUMENT_COLORS[label], INSTRUMENT_LINESTYLES[label]
+    fallback = series_style(index + 1)  # skip black, reserved for event lines
+    return fallback["color"], fallback["linestyle"]
+
+
+def plot_burn_comparison(
+    burn_to_plot=BURN_TO_PLOT,
+    script_metadata=None,
+    rooms=("kitchen",),
+    out_dir=None,
+    overwrite=False,
+):
+    """Plot the PM2.5-equivalent trace of each instrument for a single burn.
+
+    Writes an interactive Bokeh HTML and a static journal-style figure (PDF
+    and 600 dpi PNG), all ISO-dated. By default only the Morning Room
+    ("kitchen") instruments are drawn, labeled with the 1/2 unit numbering
+    used in the manuscript (AeroTrak2, MODULAIR-PM2).
+
+    Args:
+        burn_to_plot: Burn ID to plot (e.g., "burn9").
+        script_metadata: Optional metadata string to include in the HTML.
+        rooms: Locations to include ("kitchen" = Morning Room, "bedroom" =
+            Bedroom 2).
+        out_dir: Output folder; defaults to output_figures in data_config.json.
+        overwrite: Replace same-day files instead of raising.
+
+    Returns:
+        List of Path objects written, or [] if the burn has no traces.
+    """
+    print(f"Creating comparison plot for {burn_to_plot} ({', '.join(rooms)})...")
+    traces, events = _collect_burn_traces(burn_to_plot, rooms)
+    if not traces:
+        print(f"No traces for {burn_to_plot}; nothing plotted.")
+        return []
+
+    out_dir = Path(out_dir or get_common_file("output_figures"))
+    room_tag = "morning_room" if tuple(rooms) == ("kitchen",) else "_".join(rooms)
+    stem = dated_stem(out_dir, f"{burn_to_plot}_PM25_comparison_{room_tag}")
+    written = []
+
+    # --- Bokeh (interactive) ---
+    p = figure(
+        x_axis_label=AXIS_LABELS["time_since_garage_h"],
+        y_axis_label=AXIS_LABELS["pm"],
+        x_axis_type="linear",
+        y_axis_type="log",
+        width=800,
+        height=500,
+        x_range=Range1d(-1, 4),
+        y_range=Range1d(10**-1, 10**5),
     )
-
-    # Add vertical line for CR Box On
-    cr_box_on_time_str = burn_row["CR Box on"].iloc[0]
-    if pd.notna(cr_box_on_time_str):
-        cr_box_on_time = create_naive_datetime(burn_date.date(), cr_box_on_time_str)
-        # Only proceed if both timestamps are valid
-        if pd.notna(cr_box_on_time) and pd.notna(garage_closed_time):
-            cr_box_on_time_since_garage_closed = (
-                cr_box_on_time - garage_closed_time
-            ).total_seconds() / 3600
-            p.line(
-                x=[cr_box_on_time_since_garage_closed, cr_box_on_time_since_garage_closed],
-                y=[10**-2, 10**6],
-                line_color="black",
-                line_width=1,
-                line_dash="dashed",
-                legend_label="CR Box on",
-            )
-
-    # Customize legend
+    for i, tr in enumerate(traces):
+        color, ls = _trace_style(tr["label"], i)
+        p.line(
+            tr["t_h"], tr["y"], legend_label=tr["label"], line_width=2,
+            line_dash=_BOKEH_DASH[ls], color=color,
+        )
+    for (name, t_ev), dash in zip(events.items(), ("solid", "dashed")):
+        p.line(x=[t_ev, t_ev], y=[10**-2, 10**6], line_color="black", line_width=1,
+               line_dash=dash, legend_label=name)
     p.legend.click_policy = "hide"
     p.legend.location = "top_right"
+    apply_bokeh_text(p)
+    layout = column(p, Div(text=f"<small>{script_metadata}</small>", width=800)) \
+        if script_metadata else p
 
-    # Create metadata div if provided
-    if script_metadata:
-        div_text = f"<small>{script_metadata}</small>"
-        text_div = Div(text=div_text, width=800)
-        layout = column(p, text_div)
-    else:
-        layout = p
+    html_path = stem.with_suffix(".html")
+    if html_path.exists() and not overwrite:
+        raise FileExistsError(f"{html_path} exists. Pass overwrite=True to replace it.")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    output_file(str(html_path), title=f"{burn_to_plot} PM comparison")
+    save(layout)
+    written.append(html_path)
+    print(f"[html] {html_path.name}")
 
-    # Save plot
-    os.makedirs(str(get_common_file('output_figures')), exist_ok=True)
-    html_filename = f"./Paper_figures/{burn_to_plot}_PM25_comparison.html"
-    output_file(html_filename)
-    show(layout)
+    # --- matplotlib (static, journal style) ---
+    with journal_style():
+        fig, ax = plt.subplots(figsize=journal_figsize("double", aspect=0.5))
+        for i, tr in enumerate(traces):
+            color, ls = _trace_style(tr["label"], i)
+            y = np.where(tr["y"] > 0, tr["y"], np.nan)
+            ax.semilogy(tr["t_h"], y, color=color, ls=ls, lw=1.0, label=tr["label"])
+        for (name, t_ev), ls in zip(events.items(), ("-", "--")):
+            ax.axvline(t_ev, color=REF_LINE, lw=0.5, ls=ls, label=name)
+        ax.set_xlim(-1, 4)
+        ax.set_ylim(1e-1, 1e5)
+        ax.set_xlabel(AXIS_LABELS["time_since_garage_h"])
+        ax.set_ylabel(AXIS_LABELS["pm"])
+        ax.legend(loc="upper right", frameon=False)
+        written += save_pdf_png(fig, stem, overwrite=overwrite)
 
-    print(f"Plot saved to {html_filename}")
-
-    return layout
+    return written
 
 
 def find_peak_concentrations():

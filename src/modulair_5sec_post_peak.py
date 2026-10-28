@@ -9,14 +9,21 @@ contrasts the OPC-N3 bin-0 decay trajectory against the co-located AeroTrak Ch1
 count and (Bedroom 2 only) the SMPS 300-437 nm number concentration, both of
 which decay monotonically.
 
-The decay window begins at t_peak_end (from modulair_5sec_peak_per_burn.csv,
-column t_peak_end) and runs to ignition + 4 h or PM3 return to baseline,
-whichever is earlier (consistent with the Prompt 1 / coincidence definition).
+The reference time t_ref is garage-door closure from the burn log, the same
+x origin as the Burn 09 comparison figure. The decay window runs from t_ref to
+ignition + 4 h or PM3 return to baseline, whichever is earlier (consistent with
+the Prompt 1 / coincidence definition). The nephelometer saturation flag is
+still read from modulair_5sec_peak_per_burn.csv.
 
-Scope: the inversion test runs on every record that has a t_peak_end (all
-fallback-windowed MODULAIR-PM1 records plus the saturated MODULAIR-PM2
-records), so whether the inversion occurs WITHOUT prior nephelometer saturation
-can be reported. Headline counts are also reported split by saturation state.
+Two post-peak checks feed the manuscript text:
+    - Morning Room and Bedroom 2: ratio of portal PM2.5 to co-located AeroTrak
+      PM3 at t_ref + 0.5 h and t_ref + 2 h, and its fractional change;
+    - Bedroom 2: OPC-N3 bin 0 over the SMPS 300-437 nm number concentration at
+      t_ref + 2 h (absolute ratio, same units).
+
+Scope: every record with a garage-closure time is tested, so whether the
+inversion occurs WITHOUT prior nephelometer saturation can be reported.
+Headline counts are also reported split by saturation state.
 
 The script stays descriptive: it does not propose a mechanism and does not cite
 any OPC-N3 coincidence threshold (no published value exists for the OPC-N3).
@@ -28,19 +35,31 @@ Outputs (under common_folders quantaq_analysis / quantaq_figures):
     modulair_5sec_post_peak_per_burn.csv
     modulair_5sec_post_peak_cross_burn_summary.csv
     modulair_5sec_post_peak_<burn>_<unit>.html       (Bokeh, one per pair)
-    modulair_5sec_post_peak_smallmultiples.png        (matplotlib, SI)
-    modulair_5sec_post_peak_overlay.png               (matplotlib, main/SI)
-    modulair_5sec_pm25_bias.png                       (matplotlib, SI)
-    modulair_5sec_post_peak_pm25_v2.png               (matplotlib, SI)
-    modulair_5sec_bedroom_smps_v2.png                 (matplotlib, SI)
+    YYYY-MM-DD_modulair_5sec_post_peak_morning_room.pdf/.png   (SI)
+    YYYY-MM-DD_modulair_5sec_post_peak_bedroom_smps.pdf/.png   (SI)
     modulair_5sec_post_peak_summary.md
+
+Usage (from the repository root, after modulair_5sec_peak_window.py):
+    python src/modulair_5sec_post_peak.py
+    python src/modulair_5sec_post_peak.py --overwrite
 
 Author: Nathan Lima
 Created: 2026-06-26
+Update log:
+    2026-10-28: Reviewer feedback on the v4 manuscript (peak window unclear).
+        Reference time changed from t_peak_end to garage-door closure (t_ref)
+        for all post-peak statistics and figures. Added the portal PM2.5 to
+        AeroTrak PM3 ratio at t_ref + 0.5 h and + 2 h and the absolute OPC-N3
+        bin 0 to SMPS ratio at t_ref + 2 h. The two SI figures drop the
+        peak-window shading, add a PAC-on line, and save as ISO-dated PDF and
+        600 dpi PNG. The legacy normalized small-multiples, overlay, and +2 h
+        bias bar figures are no longer regenerated. Added --overwrite.
 """
 
+import argparse
 import sys
 import warnings
+from datetime import date
 from pathlib import Path
 
 import matplotlib
@@ -64,18 +83,14 @@ from src.aerotrak_coincidence import (  # noqa: E402
 )
 from src.data_paths import get_common_file  # noqa: E402
 from src.fig_style import (  # noqa: E402
-    REF_LINE,
     ROLE_COLORS,
     SHADE,
-    SHADE_ALPHA,
     UNIT_COLORS,
     apply_est_style,
     figsize,
-    save_fig,
 )
 from src.modulair_5sec_io import (  # noqa: E402
     BURN_DATES,
-    OPC_BIN_EDGES_UM,
     UNIT_CONFIG,
     load_5sec_burn,
     load_event_times,
@@ -99,20 +114,20 @@ BIN0_LABEL = "0.35-0.46 um"
 BIN1_LABEL = "0.46-0.66 um"
 BIN2_LABEL = "0.66-1.0 um"
 
-# Reference time points after t_peak_end (hours) for the trajectory comparison.
+# Reference time points after t_ref (garage closure, hours) for the trajectory comparison.
 REF_HOURS = [0.5, 1.0, 2.0, 4.0]
 # A subset used for the inversion-presence test (per the prompt: +0.5/1/2 h).
 INVERSION_TEST_HOURS = [0.5, 1.0, 2.0]
 
-# Inversion classification: any bin count at a test hour exceeds the t_peak_end
+# Inversion classification: any bin count at a test hour exceeds the t_ref
 # value by more than this fraction.
 INVERSION_FRAC = 0.50  # > 50% increase
 # Return-to-baseline persistence for the inversion-end / duration test.
-RETURN_PERSIST_MIN = 15.0  # must stay below t_peak_end value this long (min)
+RETURN_PERSIST_MIN = 15.0  # must stay below t_ref value this long (min)
 
-# Minimum t_peak_end count for a ratio (peak_inversion_ratio,
+# Minimum t_ref count for a ratio (peak_inversion_ratio,
 # opc_ratio_vs_aerotrak) to be reported. Some OPC-N3 small-bin counts at
-# t_peak_end sit near zero (e.g. burn10 MODULAIR-PM2 bin0 ~0.01 counts), so a
+# t_ref sit near zero (e.g. burn10 MODULAIR-PM2 bin0 ~0.01 counts), so a
 # ratio against them divides by a tiny denominator and explodes to implausible
 # values (thousands-fold). inversion_present stays driven by the absolute
 # +0.5/1/2 h elevation; the ratios are returned as NaN ("no_data") below this
@@ -129,8 +144,20 @@ BASELINE_MIN = 30  # pre-burn baseline window (minutes before ignition)
 # single-sample 5 s noise without smearing the trajectory.
 SAMPLE_HALF_WIDTH_S = 30.0
 
-# Input CSV from the peak-window analysis (carries t_peak_end and saturated).
+# Input CSV from the peak-window analysis (carries the saturated flag).
 PEAK_CSV = "modulair_5sec_peak_per_burn.csv"
+
+# Portal PM2.5 to AeroTrak PM3 ratio check: hours after t_ref and the largest
+# fractional change counted as "stable" in the summary.
+PM_RATIO_HOURS = (0.5, 2.0)
+PM_RATIO_STABLE_FRAC = 0.25
+
+# Event-line styles shared with the Burn 09 comparison figure. Drawn in grey
+# here because the AeroTrak traces in these figures are black dashed.
+GARAGE_LS = "-"
+PAC_LS = "--"
+EVENT_COLOR = SHADE
+REF_LABEL = "garage closure"
 
 # SMPS 300-437 nm is the OPC-N3 bin-0/-1 overlapping size range proxy for the
 # PM2.5-bias cross-check (Bedroom 2 only).
@@ -279,7 +306,7 @@ def _bin_inversion(
     """
     Characterize the post-peak inversion for one OPC-N3 bin over [t0, t_end].
 
-    t0 is t_peak_end (start of decay). The bin count at t0 is the reference;
+    t0 is t_ref (garage-door closure). The bin count at t0 is the reference;
     inversion is a sustained rise above it during decay.
 
     Returns
@@ -392,6 +419,24 @@ def _aerotrak_ch1_series(df_at: pd.DataFrame, burn_date: pd.Timestamp) -> tuple:
     return day["Date and Time"], day[ch1]
 
 
+def _nearest_value(ts: pd.Series, vals: pd.Series, target: pd.Timestamp,
+                   half_s: float = 180.0) -> float:
+    """
+    Value of a 1-min series at the sample nearest target.
+
+    Returns NaN when no sample lies within half_s seconds or the value is not
+    numeric (portal QA/QC-removed minutes stay NaN; nothing is interpolated).
+    """
+    if ts is None or vals is None or pd.isna(target) or len(ts) == 0:
+        return np.nan
+    dt = (ts - target).abs()
+    idx = dt.idxmin()
+    if dt[idx] > pd.Timedelta(seconds=half_s):
+        return np.nan
+    v = pd.to_numeric(pd.Series([vals[idx]]), errors="coerce").iloc[0]
+    return float(v) if pd.notna(v) else np.nan
+
+
 def _trajectory_at(ts, vals, t0: pd.Timestamp) -> dict:
     """
     Normalized trajectory of a reference series relative to its value at t0.
@@ -450,11 +495,10 @@ def analyze_pair(
 
     Returns a dict of CSV fields plus private '_' keys (loaded frames, event
     times, trajectories) used by the figure functions. A pair with no 5 s data
-    or no t_peak_end is flagged and skipped, never imputed.
+    or no garage-closure time is flagged and skipped, never imputed.
     """
     location = UNIT_LOCATION[unit]
     pwin = _peak_window_lookup(pw, burn_id, unit)
-    t0 = pwin["t_peak_end"]
     saturated = pwin["saturated"]
 
     ev = events.loc[burn_id] if burn_id in events.index else None
@@ -462,10 +506,12 @@ def analyze_pair(
     garage = ev["garage_closed"] if ev is not None else pd.NaT
     pac_on = ev["pac_on"] if ev is not None else pd.NaT
     burn_date = pd.Timestamp(BURN_DATES[burn_id])
+    # Reference time for every post-peak statistic: garage-door closure.
+    t0 = garage
 
     base = dict(
         burn=burn_id, unit=unit, location=location, saturated=saturated,
-        peak_window_method=pwin["peak_window_method"], t_peak_end=t0,
+        t_ref=t0,
         data_present=False, inversion_present=False, notes="",
         _df=None, _ignition=ignition, _garage=garage, _pac_on=pac_on,
         _t_end=pd.NaT, _at_ts=None, _at_vals=None, _smps_ts=None,
@@ -480,14 +526,14 @@ def analyze_pair(
     if pd.isna(t0):
         base["data_present"] = True
         base["_df"] = df
-        base["notes"] = "no t_peak_end (no peak window); inversion test skipped"
-        print(f"    [{burn_id}|{unit}] no t_peak_end - skipped.")
+        base["notes"] = "no garage-closure time in burn log; inversion test skipped"
+        print(f"    [{burn_id}|{unit}] no garage-closure time - skipped.")
         return base
 
     df_at = df_at_by_loc.get(location)
     t_end = _decay_window_end(df_at, burn_date, ignition)
     if pd.isna(t_end) or t_end <= t0:
-        # Fall back to a fixed 4 h decay window anchored on t_peak_end.
+        # Fall back to a fixed 4 h decay window anchored on t_ref.
         t_end = t0 + pd.Timedelta(hours=MAX_WIN_HR)
 
     ts = df["timestamp"]
@@ -513,7 +559,7 @@ def analyze_pair(
         rec[f"aerotrak_{k}"] = v
 
     # OPC bin-0 ratio vs AeroTrak Ch1 ratio at each reference hour. The bin-0
-    # ratio is only reported when the bin-0 count at t_peak_end clears
+    # ratio is only reported when the bin-0 count at t_ref clears
     # MIN_COUNT_FOR_RATIO (a near-zero denominator otherwise explodes the ratio).
     bin0_t0 = rec.get("bin0_count_t0", np.nan)
     bin0_ok = np.isfinite(bin0_t0) and bin0_t0 >= MIN_COUNT_FOR_RATIO
@@ -544,6 +590,35 @@ def analyze_pair(
         rec[f"smps_{k}"] = v
     rec["smps_available"] = bool(smps_ts is not None)
 
+    # Absolute OPC-N3 bin 0 over SMPS 300-437 nm (both particles/cm3), Bedroom 2.
+    for h in REF_HOURS:
+        b0 = rec.get(f"bin0_count_{h}h", np.nan)
+        sm = rec.get(f"smps_ref_{h}h", np.nan)
+        rec[f"bin0_over_smps_{h}h"] = (
+            b0 / sm if (np.isfinite(b0) and np.isfinite(sm) and sm > 0) else np.nan
+        )
+
+    # Portal PM2.5 over co-located AeroTrak PM3 at t_ref + 0.5 h and + 2 h.
+    portal = load_portal_burn(unit, burn_id)
+    pm_ratios = {}
+    for h in PM_RATIO_HOURS:
+        tref = t0 + pd.Timedelta(hours=h)
+        pm25 = _nearest_value(portal["timestamp"], portal["pm25"], tref) \
+            if (portal is not None and "pm25" in portal.columns) else np.nan
+        pm3 = np.nan
+        if df_at is not None and "PM3 (µg/m³)" in df_at.columns:
+            day = df_at[df_at["Date and Time"].dt.date == burn_date.date()]
+            pm3 = _nearest_value(day["Date and Time"], day["PM3 (µg/m³)"], tref)
+        ratio = pm25 / pm3 if (np.isfinite(pm25) and np.isfinite(pm3) and pm3 > 0) else np.nan
+        rec[f"portal_pm25_{h}h"] = pm25
+        rec[f"aerotrak_pm3_{h}h"] = pm3
+        rec[f"pm25_over_pm3_{h}h"] = ratio
+        pm_ratios[h] = ratio
+    r_lo, r_hi = pm_ratios[PM_RATIO_HOURS[0]], pm_ratios[PM_RATIO_HOURS[1]]
+    rec["pm25_over_pm3_change_frac"] = (
+        (r_hi - r_lo) / r_lo if (np.isfinite(r_lo) and np.isfinite(r_hi) and r_lo > 0) else np.nan
+    )
+
     # Notes.
     notes = []
     if not saturated:
@@ -564,7 +639,7 @@ def analyze_pair(
 def _per_burn_columns() -> list:
     """Build the per-burn CSV column order (one row per burn-unit pair)."""
     cols = ["burn", "unit", "location", "data_present", "saturated",
-            "peak_window_method", "t_peak_end", "inversion_present"]
+            "t_ref", "inversion_present"]
     for b in OPC_SMALL_BINS:
         cols += [f"{b}_count_t0"]
         cols += [f"{b}_count_{h}h" for h in REF_HOURS]
@@ -578,6 +653,10 @@ def _per_burn_columns() -> list:
     cols += ["smps_available", "smps_ref_t0"]
     cols += [f"smps_ref_{h}h" for h in REF_HOURS]
     cols += [f"smps_ref_ratio_{h}h" for h in REF_HOURS]
+    cols += [f"bin0_over_smps_{h}h" for h in REF_HOURS]
+    for h in PM_RATIO_HOURS:
+        cols += [f"portal_pm25_{h}h", f"aerotrak_pm3_{h}h", f"pm25_over_pm3_{h}h"]
+    cols += ["pm25_over_pm3_change_frac"]
     cols += ["notes"]
     return cols
 
@@ -612,7 +691,7 @@ def _bias_factor_rows(results: list) -> list:
     NOT a valid reference). The SMPS is deployed in Bedroom 2 only, so the bias
     factor is quantified there. The factor is opc_bin0_ratio_2.0h /
     smps_ref_ratio_2.0h: how much more elevated the OPC-N3 small bin is than the
-    SMPS at +2 h, both relative to their t_peak_end value.
+    SMPS at +2 h, both relative to their t_ref value.
 
     The qualifying condition is "Bedroom 2 pair with a defined peak window and a
     co-located SMPS", NOT inversion presence: the Bedroom 2 OPC-N3 bin 0 decays
@@ -630,7 +709,7 @@ def _bias_factor_rows(results: list) -> list:
     for r in results:
         if r.get("location") != "bedroom2" or not r.get("smps_available"):
             continue
-        if pd.isna(r.get("t_peak_end")):
+        if pd.isna(r.get("t_ref")):
             continue
         opc = r.get("opc_bin0_ratio_2.0h", np.nan)
         smps = r.get("smps_ref_ratio_2.0h", np.nan)
@@ -654,7 +733,7 @@ def _write_cross_burn_csv(results: list, peak_mass: pd.DataFrame, out_dir: Path)
     bin-0 inversion duration vs peak AeroTrak PM3 mass, and the
     nephelometer-saturation vs inversion-presence cross-tabulation.
     """
-    present = [r for r in results if r.get("data_present") and pd.notna(r.get("t_peak_end"))]
+    present = [r for r in results if r.get("data_present") and pd.notna(r.get("t_ref"))]
     n_tested = len(present)
     inv = [r for r in present if r.get("inversion_present")]
     n_inv = len(inv)
@@ -690,6 +769,16 @@ def _write_cross_burn_csv(results: list, peak_mass: pd.DataFrame, out_dir: Path)
     factors = factors[np.isfinite(factors)]
     n_smps_ref = sum(1 for row in bias_rows if row["ref_source"] == "SMPS")
 
+    # Manuscript checks: PM2.5/PM3 ratio stability (Morning Room) and the
+    # absolute OPC-N3 bin 0 / SMPS ratio at t_ref + 2 h (Bedroom 2).
+    mr = [r for r in present if r.get("location") == "morning_room"]
+    chg = np.array([r.get("pm25_over_pm3_change_frac", np.nan) for r in mr], dtype=float)
+    chg_f = chg[np.isfinite(chg)]
+    n_stable = int(np.sum(np.abs(chg_f) < PM_RATIO_STABLE_FRAC))
+    bd = [r for r in present if r.get("location") == "bedroom2"]
+    b_s = np.array([r.get("bin0_over_smps_2.0h", np.nan) for r in bd], dtype=float)
+    b_s = b_s[np.isfinite(b_s)]
+
     summary = dict(
         n_pairs_tested=n_tested,
         n_inversion_present=n_inv,
@@ -718,6 +807,12 @@ def _write_cross_burn_csv(results: list, peak_mass: pd.DataFrame, out_dir: Path)
         pm25_bias_factor_min=float(np.min(factors)) if factors.size else np.nan,
         pm25_bias_factor_max=float(np.max(factors)) if factors.size else np.nan,
         pm25_bias_n_smps_ref=n_smps_ref,
+        mr_pm25_pm3_n=int(chg_f.size),
+        mr_pm25_pm3_n_stable=n_stable,
+        mr_pm25_pm3_change_abs_max=float(np.max(np.abs(chg_f))) if chg_f.size else np.nan,
+        bd_bin0_over_smps_2h_n=int(b_s.size),
+        bd_bin0_over_smps_2h_min=float(np.min(b_s)) if b_s.size else np.nan,
+        bd_bin0_over_smps_2h_max=float(np.max(b_s)) if b_s.size else np.nan,
     )
     path = out_dir / "modulair_5sec_post_peak_cross_burn_summary.csv"
     pd.DataFrame([summary]).to_csv(path, index=False, float_format="%.4g")
@@ -747,12 +842,11 @@ def _decay_band(p, t0, t_end) -> None:
 
 
 def _event_spans(p, rec: dict) -> None:
-    """Vertical lines: ignition, garage closed, PAC on, t_peak_end."""
+    """Vertical lines: ignition (dotted), garage closed (t_ref, solid), PAC on (dashed)."""
     for t_ev, color, dash in [
-        (rec["_ignition"], AEROTRAK_COLOR, "solid"),
-        (rec["_garage"], AEROTRAK_COLOR, "dashed"),
-        (rec["_pac_on"], AEROTRAK_COLOR, "dotted"),
-        (rec["t_peak_end"], "#1f77b4", "solid"),
+        (rec["_ignition"], AEROTRAK_COLOR, "dotted"),
+        (rec["_garage"], AEROTRAK_COLOR, "solid"),
+        (rec["_pac_on"], AEROTRAK_COLOR, "dashed"),
     ]:
         if pd.notna(t_ev):
             p.add_layout(Span(
@@ -771,13 +865,13 @@ def _bokeh_pair(rec: dict, fig_dir: Path) -> None:
 
     Output: quantaq_figures/modulair_5sec_post_peak_<burn>_<unit>.html
     """
-    if not rec.get("data_present") or pd.isna(rec.get("t_peak_end")):
+    if not rec.get("data_present") or pd.isna(rec.get("t_ref")):
         return
     df = rec["_df"]
-    t0 = rec["t_peak_end"]
+    t0 = rec["t_ref"]
     t_end = rec["_t_end"]
 
-    # Display from 30 min before t_peak_end through the decay-window end + 15 min.
+    # Display from 30 min before t_ref through the decay-window end + 15 min.
     t_lo = t0 - pd.Timedelta(minutes=30)
     t_hi = (t_end if pd.notna(t_end) else t0 + pd.Timedelta(hours=MAX_WIN_HR)) + pd.Timedelta(minutes=15)
     sub = df[(df["timestamp"] >= t_lo) & (df["timestamp"] <= t_hi)]
@@ -833,199 +927,8 @@ def _bokeh_pair(rec: dict, fig_dir: Path) -> None:
 
 
 # ==============================================================================
-# MATPLOTLIB - SMALL MULTIPLES (SI)
+# MATPLOTLIB - SI FIGURES
 # ==============================================================================
-
-
-def _normalized_trace(ts, vals, t0, t_end):
-    """
-    Return (hours_since_t0, value / value_at_t0) over [t0, t_end], masking
-    non-positive values so the log axis does not break. value_at_t0 uses the
-    same local-mean sampler as the analysis.
-    """
-    if ts is None or vals is None or pd.isna(t0):
-        return None, None
-    ref = _value_at(ts, vals, t0)
-    if not (np.isfinite(ref) and ref >= MIN_COUNT_FOR_RATIO):
-        return None, None
-    m = (ts >= t0) & (ts <= t_end)
-    x = (ts[m] - t0).dt.total_seconds() / 3600.0
-    y = pd.to_numeric(vals[m], errors="coerce") / ref
-    y = y.where(y > 0)
-    return x.to_numpy(dtype=float), y.to_numpy(dtype=float)
-
-
-def _mpl_small_multiples(results: list, fig_dir: Path) -> None:
-    """
-    Figure S4 (SI): one panel per burn-unit pair with an inversion. OPC-N3 bin 0
-    normalized to its value at t_peak_end (solid) vs the co-located AeroTrak Ch1
-    normalized to its value at t_peak_end (dashed). x = hours since t_peak_end,
-    log y. Shared bottom x-label and left y-label; 12 pt fonts via the shared
-    style; one figure-level legend.
-    """
-    pairs = [r for r in results if r.get("inversion_present")]
-    pairs = sorted(pairs, key=lambda r: (int(r["burn"].replace("burn", "")), r["unit"]))
-    if not pairs:
-        print("    [mpl] no inversion pairs for small multiples.")
-        return
-
-    ncols = 3
-    nrows = int(np.ceil(len(pairs) / ncols))
-    fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(figsize("double")[0], 2.4 * nrows),
-                             sharex=True, sharey=True)
-    axes = np.array(axes).flatten()
-
-    for ax_idx, rec in enumerate(pairs):
-        ax = axes[ax_idx]
-        t0, t_end = rec["t_peak_end"], rec["_t_end"]
-        df = rec["_df"]
-        # OPC-N3 bin 0.
-        x_opc, y_opc = _normalized_trace(df["timestamp"], df["bin0"], t0, t_end)
-        if x_opc is not None:
-            ax.semilogy(x_opc, y_opc, color=UNIT_COLOR[rec["unit"]], lw=1.1,
-                        label="OPC-N3 bin0", alpha=0.9)
-        # AeroTrak Ch1.
-        x_at, y_at = _normalized_trace(rec["_at_ts"], rec["_at_vals"], t0, t_end)
-        if x_at is not None:
-            ax.semilogy(x_at, y_at, color=AEROTRAK_COLOR, lw=1.1, ls="--",
-                        label="AeroTrak Ch1", alpha=0.9)
-        ax.axhline(1.0, color=REF_LINE, lw=0.7, ls=":")
-        ax.tick_params(labelsize=_FS - 2)
-        tag = "Bdrm" if rec["unit"] == "MODULAIR-PM1" else "MR"
-        sat = "sat" if rec["saturated"] else "no-sat"
-        ax.set_title(f"{rec['burn']} {tag} ({sat})", fontsize=_FS - 1)
-
-    for ax in axes[len(pairs):]:
-        ax.set_visible(False)
-
-    fig.supxlabel("Hours since end of peak window", fontsize=_FS)
-    fig.supylabel("count / count at t_peak_end", fontsize=_FS)
-
-    # Legend swatches must match the plotted OPC-N3 trace colors, which are
-    # per unit (Bedroom 2 PM1 blue, Morning Room PM2 vermillion), not a single
-    # gray. The AeroTrak Ch1 companion is dashed black.
-    from matplotlib.lines import Line2D
-    handles = [
-        Line2D([0], [0], color=UNIT_COLOR["MODULAIR-PM1"], lw=1.5,
-               label="OPC-N3 bin0 - Bedroom 2 (norm.)"),
-        Line2D([0], [0], color=UNIT_COLOR["MODULAIR-PM2"], lw=1.5,
-               label="OPC-N3 bin0 - Morning Room (norm.)"),
-        Line2D([0], [0], color=AEROTRAK_COLOR, lw=1.5, ls="--",
-               label="AeroTrak Ch1 (normalized)"),
-        Line2D([0], [0], color=REF_LINE, lw=0.7, ls=":", label="ratio = 1"),
-    ]
-    fig.legend(handles=handles, loc="lower right", ncol=1,
-               fontsize=_FS - 2, frameon=True, bbox_to_anchor=(0.98, 0.04))
-
-    save_fig(fig, fig_dir / "modulair_5sec_post_peak_smallmultiples.png")
-
-
-# ==============================================================================
-# MATPLOTLIB - OVERLAY (main text / SI)
-# ==============================================================================
-
-
-def _mpl_overlay(results: list, fig_dir: Path) -> None:
-    """
-    Figure 3 (main text, double column): MODULAIR-PM2 (Morning Room) OPC-N3 bin 0
-    normalized to its value at t_peak_end, overlaid across all qualifying
-    (inversion-present) burns. x = hours since t_peak_end, log y, dashed
-    reference at y = 1.
-    """
-    pairs = [r for r in results
-             if r["unit"] == "MODULAIR-PM2" and r.get("inversion_present")]
-    pairs = sorted(pairs, key=lambda r: int(r["burn"].replace("burn", "")))
-    if not pairs:
-        print("    [mpl] no MODULAIR-PM2 inversion pairs for overlay.")
-        return
-
-    fig, ax = plt.subplots(figsize=figsize("double", aspect=0.55))
-    # Sequential single-hue palette: light salmon -> full Morning Room vermillion.
-    # Provides per-burn distinguishability while staying within the unit color family.
-    n = max(len(pairs), 2)
-    base_rgb = matplotlib.colors.to_rgb(UNIT_COLOR["MODULAIR-PM2"])
-    shades = [
-        tuple(1.0 - (1.0 - c) * (0.25 + 0.75 * i / (n - 1)) for c in base_rgb)
-        for i in range(n)
-    ]
-    for i, rec in enumerate(pairs):
-        x, y = _normalized_trace(rec["_df"]["timestamp"], rec["_df"]["bin0"],
-                                 rec["t_peak_end"], rec["_t_end"])
-        if x is not None:
-            burn_label = rec["burn"].replace("burn", "Burn ")
-            ax.semilogy(x, y, color=shades[i], lw=1.4, alpha=0.95,
-                        label=burn_label)
-
-    ax.axhline(1.0, color=REF_LINE, lw=1.0, ls="--", label="value at t_peak_end")
-    ax.set_xlabel("Hours since end of peak window", fontsize=_FS)
-    ax.set_ylabel("Normalized OPC-N3 bin 0 count", fontsize=_FS)
-    ax.tick_params(labelsize=_FS)
-    ax.legend(fontsize=_FS - 2, ncol=1, loc="upper right")
-
-    save_fig(fig, fig_dir / "modulair_5sec_post_peak_overlay.png")
-
-
-# ==============================================================================
-# MATPLOTLIB - PM2.5 BIAS (SI)
-# ==============================================================================
-
-
-def _mpl_pm25_bias(results: list, fig_dir: Path) -> None:
-    """
-    Figure S5 (SI), multi-burn: for every Bedroom 2 pair with a co-located SMPS,
-    the OPC-N3 bin-0 +2 h count ratio (count / count at t_peak_end) beside the
-    SMPS 300-437 nm +2 h ratio. The SMPS is the only same-size reference that is
-    mechanistically independent of the OPC scattering artifact (the co-located
-    AeroTrak Ch1 shares the same OPC reversal behavior and is not used as a
-    reference). A dashed line at ratio = 1 marks the end-of-peak value; the OPC /
-    SMPS factor is annotated above each pair.
-
-    The figure conveys that the OPC-N3 small-bin count stays elevated at +2 h
-    relative to the independent SMPS reference, so the portal PM2.5 (derived in
-    part from the OPC-N3 counts) is biased high post-peak. Morning Room has no
-    co-located SMPS and therefore no valid reference, so the bias is quantified
-    in Bedroom 2 only. No mechanism is proposed.
-    """
-    present = [r for r in results
-               if r.get("data_present") and pd.notna(r.get("t_peak_end"))]
-    rows = _bias_factor_rows(present)
-    rows = sorted(rows, key=lambda d: int(d["burn"].replace("burn", "")))
-    if not rows:
-        print("    [mpl] no Bedroom 2 SMPS pairs for PM2.5 bias chart.")
-        return
-
-    labels = [d["burn"].replace("burn", "burn ") for d in rows]
-    opc_r = [d["opc_ratio"] for d in rows]
-    smps_r = [d["ref_ratio"] for d in rows]
-    factors = [d["factor"] for d in rows]
-
-    x = np.arange(len(rows))
-    w = 0.38
-    fig, ax = plt.subplots(figsize=(figsize("double")[0], 3.6))
-
-    opc_color = UNIT_COLOR["MODULAIR-PM1"]
-    ax.bar(x - w / 2, opc_r, w, color=opc_color, alpha=0.9,
-           label="OPC-N3 bin0 (count / t_peak_end)")
-    smps_bars = ax.bar(x + w / 2, smps_r, w, color=SMPS_COLOR, alpha=0.85,
-                       label="SMPS 300-437 nm (count / t_peak_end)")
-
-    # Annotate the OPC / SMPS elevation factor above each pair.
-    tops = [max(o, s) for o, s in zip(opc_r, smps_r)]
-    for xi, top, fac in zip(x, tops, factors):
-        ax.annotate(f"{fac:.0f}x", xy=(xi, top), xytext=(0, 3),
-                    textcoords="offset points", ha="center", va="bottom",
-                    fontsize=_FS - 3)
-
-    ax.axhline(1.0, color=REF_LINE, lw=0.9, ls="--")
-    ax.set_yscale("log")
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=_FS - 2)
-    ax.set_ylabel("Count ratio at +2 h", fontsize=_FS)
-    ax.tick_params(labelsize=_FS - 1)
-    ax.legend(fontsize=_FS - 2, ncol=1, loc="upper left")
-
-    save_fig(fig, fig_dir / "modulair_5sec_pm25_bias.png")
 
 
 def _smooth_1min(vals: pd.Series) -> pd.Series:
@@ -1033,56 +936,87 @@ def _smooth_1min(vals: pd.Series) -> pd.Series:
     return pd.to_numeric(vals, errors="coerce").rolling(12, center=True, min_periods=6).mean()
 
 
-def _peak_starts() -> dict:
-    """Map (burn, unit) -> t_peak_start from the peak-window CSV (NaT if absent)."""
-    path = get_common_file("quantaq_analysis") / PEAK_CSV
-    df = pd.read_csv(path)
-    df["t_peak_start"] = pd.to_datetime(df.get("t_peak_start"), errors="coerce")
-    return {(r.burn, r.unit): r.t_peak_start for r in df.itertuples()}
-
-
 def _hours_since(ts: pd.Series, t0: pd.Timestamp) -> pd.Series:
     """Hours between each timestamp and t0."""
     return (ts - t0).dt.total_seconds() / 3600.0
 
 
-def _mpl_post_peak_pm25_v2(results: list, df_at_by_loc: dict, fig_dir: Path) -> None:
+def _save_pdf_png_tight(fig, stem: Path, overwrite: bool = False) -> list:
     """
-    SI figure, replaces the normalized small multiples: Morning Room post-peak
-    record, one row per burn, two columns on a shared time axis (hours since the
-    end of the peak window, t_peak_end):
+    Save a figure as vector PDF and 600 dpi PNG with a tight bounding box.
+
+    The SI post-peak figures place their legend outside the axes grid, so the
+    tight box is kept (unlike src.project_style.save_pdf_png, which preserves
+    the creation size). An existing file raises unless overwrite is True.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+    stem : Path
+        Output path without suffix (ISO-dated by the caller).
+    overwrite : bool
+        Replace existing files instead of raising.
+
+    Returns
+    -------
+    list of Path
+    """
+    stem = Path(stem)
+    stem.parent.mkdir(parents=True, exist_ok=True)
+    paths = [stem.with_suffix(".pdf"), stem.with_suffix(".png")]
+    for p in paths:
+        if p.exists() and not overwrite:
+            plt.close(fig)
+            raise FileExistsError(f"{p} exists. Rerun with --overwrite or rename it.")
+    for p in paths:
+        fig.savefig(str(p), dpi=600, bbox_inches="tight")
+        print(f"    [fig] {p.name}")
+    plt.close(fig)
+    return paths
+
+
+def _event_lines(ax, rec: dict, t0: pd.Timestamp) -> None:
+    """Garage closure (x = 0, solid) and PAC on (dashed), in hours since t0."""
+    ax.axvline(0.0, color=EVENT_COLOR, lw=0.9, ls=GARAGE_LS)
+    pac = rec.get("_pac_on", pd.NaT)
+    if pd.notna(pac):
+        ax.axvline((pac - t0).total_seconds() / 3600.0, color=EVENT_COLOR, lw=0.9, ls=PAC_LS)
+
+
+def _mpl_post_peak_pm25_v2(results: list, df_at_by_loc: dict, fig_dir: Path,
+                           overwrite: bool = False) -> list:
+    """
+    SI figure: Morning Room post-peak record, one row per burn, two columns on
+    a shared time axis (hours since garage-door closure, t_ref):
         (left)  mass: portal MODULAIR-PM2 PM2.5 vs co-located AeroTrak2 PM3;
         (right) number: OPC-N3 bin 0 vs AeroTrak2 Ch1 (0.3-0.5 um).
-    Both columns are absolute values on log axes, so no trace is dropped for a
-    near-zero value at t_peak_end. The peak window is shaded and t_peak_end is
-    the x origin. Mass and number are separate panels rather than two y-scales
-    on one axis.
+    Both columns are absolute values on log axes. Vertical lines mark garage
+    closure (x = 0, solid) and portable air cleaner activation (dashed). Mass
+    and number are separate panels rather than two y-scales on one axis.
 
     Reading: if the portal PM2.5 decays more slowly than the AeroTrak PM3 while
     OPC-N3 bin 0 is elevated, the post-peak bin 0 rise is carried into the
     delivered PM2.5.
     """
     from matplotlib.lines import Line2D
-    from matplotlib.patches import Patch
 
     unit = "MODULAIR-PM2"
     pairs = [r for r in results
-             if r["unit"] == unit and r.get("data_present") and pd.notna(r.get("t_peak_end"))]
+             if r["unit"] == unit and r.get("data_present") and pd.notna(r.get("t_ref"))]
     pairs = sorted(pairs, key=lambda r: int(r["burn"].replace("burn", "")))
     if not pairs:
-        print("    [mpl] no Morning Room pairs for post-peak PM2.5 v2.")
-        return
-    starts = _peak_starts()
+        print("    [mpl] no Morning Room pairs for post-peak PM2.5 figure.")
+        return []
     df_at = df_at_by_loc.get("morning_room")
     color = UNIT_COLOR[unit]
-    x_lo = -0.75
+    x_lo = -0.5
 
     nrows = len(pairs)
     fig, axes = plt.subplots(nrows, 2, figsize=(figsize("double")[0], 1.6 * nrows + 0.8),
                              sharex=True, squeeze=False)
     for i, rec in enumerate(pairs):
         ax_m, ax_n = axes[i]
-        t0, t_end = rec["t_peak_end"], rec["_t_end"]
+        t0, t_end = rec["t_ref"], rec["_t_end"]
         x_hi = _hours_since(pd.Series([t_end]), t0).iloc[0] if pd.notna(t_end) else MAX_WIN_HR
         burn_no = int(rec["burn"].replace("burn", ""))
         ax_m.set_ylabel(f"Burn {burn_no:02d}", fontsize=_FS - 1)
@@ -1113,12 +1047,8 @@ def _mpl_post_peak_pm25_v2(results: list, df_at_by_loc: dict, fig_dir: Path) -> 
             ch1 = pd.to_numeric(rec["_at_vals"][mc], errors="coerce")
             ax_n.semilogy(xc[mc], ch1.where(ch1 > 0), color=AEROTRAK_COLOR, lw=1.1, ls="--")
 
-        t_start = starts.get((rec["burn"], unit), pd.NaT)
         for ax in (ax_m, ax_n):
-            if pd.notna(t_start):
-                ax.axvspan((t_start - t0).total_seconds() / 3600.0, 0.0,
-                           color=SHADE, alpha=SHADE_ALPHA, lw=0)
-            ax.axvline(0.0, color=REF_LINE, lw=0.8, ls=":")
+            _event_lines(ax, rec, t0)
             ax.tick_params(labelsize=_FS - 2)
         ax_n.text(0.98, 0.94, "saturated" if rec.get("saturated") else "not saturated",
                   transform=ax_n.transAxes, ha="right", va="top", fontsize=_FS - 4)
@@ -1126,38 +1056,44 @@ def _mpl_post_peak_pm25_v2(results: list, df_at_by_loc: dict, fig_dir: Path) -> 
     axes[0, 0].set_title("PM mass (µg·m⁻³)", fontsize=_FS, fontweight="bold")
     axes[0, 1].set_title("Number concentration (particles·cm⁻³)", fontsize=_FS, fontweight="bold")
     axes[-1, 0].set_xlim(left=x_lo)
-    fig.supxlabel("Hours since end of peak window (t_peak_end)", fontsize=_FS)
+    fig.supxlabel("Hours since garage-door closure", fontsize=_FS)
     handles = [
-        Line2D([0], [0], color=color, lw=1.2, label="MODULAIR-PM2: portal PM2.5 (left), OPC-N3 bin 0 (right)"),
+        Line2D([0], [0], color=color, lw=1.2,
+               label="MODULAIR-PM2: portal PM2.5 (left), OPC-N3 bin 0 (right)"),
         Line2D([0], [0], color=AEROTRAK_COLOR, lw=1.1, ls="--",
                label="AeroTrak2: PM3 (left), Ch1 0.3 µm to 0.5 µm (right)"),
-        Patch(color=SHADE, alpha=SHADE_ALPHA, label="peak window"),
+        Line2D([0], [0], color=EVENT_COLOR, lw=0.9, ls=GARAGE_LS, label="Garage closed"),
+        Line2D([0], [0], color=EVENT_COLOR, lw=0.9, ls=PAC_LS, label="PAC on"),
     ]
-    fig.legend(handles=handles, loc="upper center", ncol=1, fontsize=_FS - 3, frameon=False,
+    fig.legend(handles=handles, loc="upper center", ncol=2, fontsize=_FS - 3, frameon=False,
                bbox_to_anchor=(0.5, 1.0 + 0.75 / (1.6 * nrows + 0.8)))
-    save_fig(fig, fig_dir / "modulair_5sec_post_peak_pm25_v2.png")
+    return _save_pdf_png_tight(
+        fig, fig_dir / f"{date.today().isoformat()}_modulair_5sec_post_peak_morning_room",
+        overwrite=overwrite,
+    )
 
 
-def _mpl_bedroom_smps_v2(results: list, fig_dir: Path) -> None:
+def _mpl_bedroom_smps_v2(results: list, fig_dir: Path, overwrite: bool = False) -> list:
     """
-    SI figure, replaces the +2 h ratio bars: Bedroom 2 post-peak number
-    concentration of MODULAIR-PM1 OPC-N3 bin 0 (0.35-0.46 um), the co-located
-    SMPS 300-437 nm sum, and AeroTrak1 Ch1 (0.3-0.5 um), one panel per burn,
-    versus hours since t_peak_end on a log axis. All three are particles/cm3,
-    so the panels show absolute levels rather than a ratio of ratios. A dotted
-    line marks +2 h, the time used for the OPC-N3 to SMPS comparison in the text.
+    SI figure: Bedroom 2 post-peak number concentration of MODULAIR-PM1 OPC-N3
+    bin 0 (0.35-0.46 um), the co-located SMPS 300-437 nm sum, and AeroTrak1 Ch1
+    (0.3-0.5 um), one panel per burn, versus hours since garage-door closure
+    (t_ref) on a log axis. All three are particles/cm3, so the panels show
+    absolute levels. Vertical lines mark garage closure (solid), portable air
+    cleaner activation (dashed), and t_ref + 2 h (grey dotted), the time used
+    for the OPC-N3 to SMPS comparison in the text.
     """
     from matplotlib.lines import Line2D
 
     unit = "MODULAIR-PM1"
     pairs = [r for r in results
-             if r["unit"] == unit and r.get("data_present") and pd.notna(r.get("t_peak_end"))]
+             if r["unit"] == unit and r.get("data_present") and pd.notna(r.get("t_ref"))]
     pairs = sorted(pairs, key=lambda r: int(r["burn"].replace("burn", "")))
     if not pairs:
-        print("    [mpl] no Bedroom 2 pairs for SMPS comparison v2.")
-        return
+        print("    [mpl] no Bedroom 2 pairs for SMPS comparison.")
+        return []
     color = UNIT_COLOR[unit]
-    x_lo = -0.25
+    x_lo = -0.5
 
     ncols = 3
     nrows = int(np.ceil(len(pairs) / ncols))
@@ -1165,7 +1101,7 @@ def _mpl_bedroom_smps_v2(results: list, fig_dir: Path) -> None:
                              sharex=True, sharey=True)
     axes = np.array(axes).flatten()
     for ax, rec in zip(axes, pairs):
-        t0, t_end = rec["t_peak_end"], rec["_t_end"]
+        t0, t_end = rec["t_ref"], rec["_t_end"]
         x_hi = _hours_since(pd.Series([t_end]), t0).iloc[0] if pd.notna(t_end) else MAX_WIN_HR
         df = rec["_df"]
         xo = _hours_since(df["timestamp"], t0)
@@ -1183,7 +1119,7 @@ def _mpl_bedroom_smps_v2(results: list, fig_dir: Path) -> None:
             mc = (xc >= x_lo) & (xc <= x_hi)
             ch1 = pd.to_numeric(rec["_at_vals"][mc], errors="coerce")
             ax.semilogy(xc[mc], ch1.where(ch1 > 0), color=AEROTRAK_COLOR, lw=1.0, ls="--")
-        ax.axvline(0.0, color=REF_LINE, lw=0.8, ls=":")
+        _event_lines(ax, rec, t0)
         ax.axvline(2.0, color=SHADE, lw=0.8, ls=":")
         burn_no = int(rec["burn"].replace("burn", ""))
         sealed = " (sealed)" if rec["burn"] in ("burn5", "burn6") else ""
@@ -1192,17 +1128,22 @@ def _mpl_bedroom_smps_v2(results: list, fig_dir: Path) -> None:
     for ax in axes[len(pairs):]:
         ax.set_visible(False)
 
-    fig.supxlabel("Hours since end of peak window (t_peak_end)", fontsize=_FS)
+    fig.supxlabel("Hours since garage-door closure", fontsize=_FS)
     fig.supylabel("Number concentration (particles·cm⁻³)", fontsize=_FS)
     handles = [
         Line2D([0], [0], color=color, lw=1.2, label="MODULAIR-PM1 OPC-N3 bin 0 (0.35 µm to 0.46 µm)"),
         Line2D([0], [0], color=SMPS_COLOR, lw=1.1, marker="o", ms=3, label="SMPS 300 nm to 437 nm"),
         Line2D([0], [0], color=AEROTRAK_COLOR, lw=1.0, ls="--", label="AeroTrak1 Ch1 (0.3 µm to 0.5 µm)"),
-        Line2D([0], [0], color=SHADE, lw=0.8, ls=":", label="t_peak_end + 2 h"),
+        Line2D([0], [0], color=EVENT_COLOR, lw=0.9, ls=GARAGE_LS, label="Garage closed"),
+        Line2D([0], [0], color=EVENT_COLOR, lw=0.9, ls=PAC_LS, label="PAC on"),
+        Line2D([0], [0], color=SHADE, lw=0.8, ls=":", label="Garage closure + 2 h"),
     ]
     fig.legend(handles=handles, loc="lower right", ncol=1, fontsize=_FS - 3,
                frameon=True, bbox_to_anchor=(0.98, 0.04))
-    save_fig(fig, fig_dir / "modulair_5sec_bedroom_smps_v2.png")
+    return _save_pdf_png_tight(
+        fig, fig_dir / f"{date.today().isoformat()}_modulair_5sec_post_peak_bedroom_smps",
+        overwrite=overwrite,
+    )
 
 
 # ==============================================================================
@@ -1220,18 +1161,18 @@ def _fmt(val, fmt: str = ".1f") -> str:
 
 def _write_summary_md(results: list, summary: dict, out_dir: Path) -> None:
     """Plain-language synthesis with a per-pair table and flagged conditions."""
-    present = [r for r in results if r.get("data_present") and pd.notna(r.get("t_peak_end"))]
-    skipped = [r for r in results if not (r.get("data_present") and pd.notna(r.get("t_peak_end")))]
+    present = [r for r in results if r.get("data_present") and pd.notna(r.get("t_ref"))]
+    skipped = [r for r in results if not (r.get("data_present") and pd.notna(r.get("t_ref")))]
 
     lines = ["# MODULAIR-PM 5 s post-peak OPC-N3 inversion - summary", ""]
     lines.append("## Plain-language synthesis\n")
     lines.append(
-        f"Of {summary['n_pairs_tested']} burn-unit pairs with a defined peak "
-        f"window (t_peak_end), {summary['n_inversion_present']} show a post-peak "
+        f"Of {summary['n_pairs_tested']} burn-unit pairs with a garage-closure "
+        f"time (t_ref), {summary['n_inversion_present']} show a post-peak "
         f"OPC-N3 small-bin inversion: during the decay phase one or more of the "
         f"three smallest bins (bin0 {BIN0_LABEL}, bin1 {BIN1_LABEL}, bin2 "
         f"{BIN2_LABEL}) rises by more than {int(INVERSION_FRAC * 100)}% above its "
-        f"count at t_peak_end, opposite to the smoke decay."
+        f"count at garage closure, opposite to the smoke decay."
     )
     # Name the unsaturated records that actually invert, so the prose does not
     # imply the non-inverting fallback-windowed units contribute to the count.
@@ -1259,13 +1200,24 @@ def _write_summary_md(results: list, summary: dict, out_dir: Path) -> None:
     lines.append(
         f"\nAcross the {summary['bin0_n_inversions']} pairs with a bin-0 "
         f"inversion, the bin-0 count rises to a median of "
-        f"{_fmt(summary['bin0_peak_ratio_median'], '.1f')} times its t_peak_end "
+        f"{_fmt(summary['bin0_peak_ratio_median'], '.1f')} times its garage-closure "
         f"value (range {_fmt(summary['bin0_peak_ratio_min'], '.1f')} to "
         f"{_fmt(summary['bin0_peak_ratio_max'], '.1f')}). The inversion persists "
         f"for a median of {_fmt(summary['bin0_inversion_duration_median_h'], '.2f')} "
         f"hours (range {_fmt(summary['bin0_inversion_duration_min_h'], '.2f')} to "
         f"{_fmt(summary['bin0_inversion_duration_max_h'], '.2f')}); durations that "
         f"equal the analysis-window length are right-censored lower bounds."
+    )
+    lines.append(
+        f"\nManuscript checks. Morning Room: the portal PM2.5 to AeroTrak2 PM3 "
+        f"ratio changed by less than {int(PM_RATIO_STABLE_FRAC * 100)} % between "
+        f"t_ref + {PM_RATIO_HOURS[0]} h and t_ref + {PM_RATIO_HOURS[1]} h in "
+        f"{summary['mr_pm25_pm3_n_stable']} of {summary['mr_pm25_pm3_n']} burns "
+        f"(largest absolute change {_fmt(summary['mr_pm25_pm3_change_abs_max'], '.2f')}). "
+        f"Bedroom 2: at t_ref + 2 h, MODULAIR-PM1 OPC-N3 bin 0 was "
+        f"{_fmt(summary['bd_bin0_over_smps_2h_min'], '.2f')} to "
+        f"{_fmt(summary['bd_bin0_over_smps_2h_max'], '.2f')} times the SMPS "
+        f"300-437 nm concentration ({summary['bd_bin0_over_smps_2h_n']} burns)."
     )
     lines.append(
         f"\nSpearman rho between bin-0 inversion duration and co-located peak "
@@ -1283,9 +1235,10 @@ def _write_summary_md(results: list, summary: dict, out_dir: Path) -> None:
     lines.append("\n## Per-pair results\n")
     lines.append(
         "| burn | unit | saturated | inversion | bin0 peak ratio | "
-        "bin0 dur (h) | OPC/AeroTrak +2h | SMPS avail |"
+        "bin0 dur (h) | OPC/AeroTrak +2h | PM2.5/PM3 +0.5h | PM2.5/PM3 +2h | "
+        "bin0/SMPS +2h | SMPS avail |"
     )
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
     for r in present:
         lines.append(
             f"| {r['burn']} | {r['unit']} | {r.get('saturated')} | "
@@ -1293,6 +1246,9 @@ def _write_summary_md(results: list, summary: dict, out_dir: Path) -> None:
             f"{_fmt(r.get('bin0_peak_inversion_ratio'), '.1f')} | "
             f"{_fmt(r.get('bin0_inversion_duration_hours'), '.2f')} | "
             f"{_fmt(r.get('opc_ratio_vs_aerotrak_2.0h'), '.1f')} | "
+            f"{_fmt(r.get('pm25_over_pm3_0.5h'), '.2f')} | "
+            f"{_fmt(r.get('pm25_over_pm3_2.0h'), '.2f')} | "
+            f"{_fmt(r.get('bin0_over_smps_2.0h'), '.2f')} | "
             f"{r.get('smps_available')} |"
         )
 
@@ -1301,7 +1257,7 @@ def _write_summary_md(results: list, summary: dict, out_dir: Path) -> None:
     flagged = False
     for r in skipped:
         reason = r.get("notes") or ("5 s data missing" if not r.get("data_present")
-                                    else "no t_peak_end")
+                                    else "no garage-closure time")
         lines.append(f"- {r['burn']} {r['unit']}: {reason} (not imputed).")
         flagged = True
     for r in present:
@@ -1328,6 +1284,12 @@ def _write_summary_md(results: list, summary: dict, out_dir: Path) -> None:
 
 def main() -> None:
     """Run the full post-peak inversion analysis: load, analyze, write outputs."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    parser.add_argument(
+        "--overwrite", action="store_true",
+        help="replace same-day ISO-dated figures instead of raising",
+    )
+    args = parser.parse_args()
     warnings.filterwarnings("ignore")
     apply_est_style()
     print("\n" + "=" * 70)
@@ -1339,7 +1301,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    print("Loading peak windows, events, AeroTrak, peak-mass...")
+    print("Loading saturation flags, events, AeroTrak, peak-mass...")
     pw = _load_peak_windows()
     events = load_event_times()
     df_at_by_loc = {
@@ -1355,7 +1317,7 @@ def main() -> None:
         for unit in UNITS:
             rec = analyze_pair(burn_id, unit, pw, events, df_at_by_loc, smps_cache)
             results.append(rec)
-            if rec.get("data_present") and pd.notna(rec.get("t_peak_end")):
+            if rec.get("data_present") and pd.notna(rec.get("t_ref")):
                 print(
                     f"    {unit}: sat={rec.get('saturated')} "
                     f"inversion={rec.get('inversion_present')} "
@@ -1371,11 +1333,11 @@ def main() -> None:
         _bokeh_pair(rec, fig_dir)
 
     print("\nWriting matplotlib figures...")
-    _mpl_small_multiples(results, fig_dir)
-    _mpl_overlay(results, fig_dir)
-    _mpl_pm25_bias(results, fig_dir)
-    _mpl_post_peak_pm25_v2(results, df_at_by_loc, fig_dir)
-    _mpl_bedroom_smps_v2(results, fig_dir)
+    # The legacy normalized small multiples, overlay, and +2 h ratio bars are
+    # no longer manuscript figures (each divides by a near-zero reference
+    # count), so they are not regenerated.
+    _mpl_post_peak_pm25_v2(results, df_at_by_loc, fig_dir, overwrite=args.overwrite)
+    _mpl_bedroom_smps_v2(results, fig_dir, overwrite=args.overwrite)
 
     print("\nWriting markdown outputs...")
     _write_summary_md(results, summary, out_dir)

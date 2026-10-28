@@ -22,9 +22,18 @@ Outputs (under common_folders quantaq_analysis / quantaq_figures):
     modulair_5sec_peak_<burn>_<unit>.html         (Bokeh, one per pair)
     modulair_5sec_bin_response_grid.png           (matplotlib, SI)
     modulair_5sec_qaqc_overlap.png                (matplotlib)
-    modulair_5sec_opc_timeseries_grid_v2.png      (matplotlib, SI)
-    modulair_5sec_qaqc_overlap_v2.png             (matplotlib, SI)
+    YYYY-MM-DD_modulair_5sec_qaqc_timeseries_burn6.pdf/.png   (main text)
+    YYYY-MM-DD_modulair_5sec_opc_timeseries_main.pdf/.png     (main text)
+    YYYY-MM-DD_modulair_5sec_saturation_qaqc_table.csv/.md    (SI table)
     modulair_5sec_peak_summary.md
+
+The peak window is still detected internally: for saturated records it is the
+span at the nephelometer 16-bit ceiling, which locates the portal QA/QC removal
+and the OPC-N3 suppression. It is no longer drawn on any figure.
+
+Usage (from the repository root):
+    python src/modulair_5sec_peak_window.py
+    python src/modulair_5sec_peak_window.py --overwrite
 
 Author: Nathan Lima
 Created: 2026-06-25
@@ -34,8 +43,17 @@ Update log:
         OPC-N3 bin labels corrected to #/cm3 (the SD-card bins are counts
         divided by sample_flow x sample_period, per the QuantAQ manual and
         the data); nephelometer bins labeled as particles.
+    2026-10-28: Reviewer feedback on the v4 manuscript (peak window unclear).
+        QA/QC time series: top panel shows portal PM1 and PM2.5, the strip bar
+        is the nephelometer-saturated span (not the "peak window"), and
+        garage-closure (solid) and PAC-on (dashed) lines replace the window
+        guides. The OPC-N3 bin 0/1 grid moves to the main text in the journal style with no
+        peak-window shading and with garage-closure and PAC-on lines. The
+        peak-window/QA/QC duration bar chart is replaced by a per-record
+        saturation and QA/QC table. Added --overwrite.
 """
 
+import argparse
 import sys
 import warnings
 from pathlib import Path
@@ -58,7 +76,6 @@ from src.fig_style import (  # noqa: E402
     REF_LINE,
     ROLE_COLORS,
     SHADE,
-    SHADE_ALPHA,
     UNIT_COLORS,
     apply_est_style,
     figsize,
@@ -180,6 +197,25 @@ FIG2_UNIT = "MODULAIR-PM2"
 
 # Numeric point size for matplotlib calls (matches src.fig_style BASE_FONT_PT).
 _FS = 12
+
+# Axis labels in the manuscript unit style. The shared AXIS_LABELS entries for
+# number concentration use "#/cm³"; the manuscript text uses particles·cm⁻³.
+# Exponents use mathtext because the journal font (Arial) has no superscript
+# minus glyph, which otherwise renders as an empty box.
+PORTAL_PM_LABEL = r"Portal PM (µg·m$^{-3}$)"
+OPC_BIN0_LABEL = r"OPC-N3 bin 0 (particles·cm$^{-3}$)"
+OPC_NUMCONC_LABEL = r"OPC-N3 number concentration (particles·cm$^{-3}$)"
+
+# Event-line styles shared with the Burn 09 comparison figure (Figure 2):
+# garage closure solid, portable air cleaner activation dashed.
+GARAGE_LS = "-"
+PAC_LS = "--"
+
+# Sample period of the raw on-instrument record (s), for minutes at the ceiling.
+SAMPLE_PERIOD_S = 5.0
+
+# Portal peak search window after ignition (h), for the saturation/QA/QC table.
+PORTAL_PEAK_WIN_H = 4.0
 
 # Per-unit plot colors from the shared colorblind-safe palette (bedroom blue,
 # morning room vermillion).
@@ -1177,19 +1213,22 @@ def _mpl_bin_response_grid(results: list[dict]) -> None:
 
 def _mpl_qaqc_timeseries_fig2(results: list[dict], out_dir=None, overwrite: bool = False) -> list:
     """
-    Figure 2 (main text, double column): FIG2_BURN MODULAIR-PM2 (Morning Room)
-    time series over the peak window, aligned-time panels showing that the
-    portal data gap, the saturated nephelometer, the suppressed OPC-N3 bin 0,
-    and the portal QA/QC removal interval coincide:
-        (a) 1-min QA/QC-processed portal PM1 (ug/m3), with the removed minutes
-            left as a gap;
+    Main-text QA/QC time series (double column): FIG2_BURN MODULAIR-PM2
+    (Morning Room) record around the smoke peak, aligned-time panels showing
+    that the portal data gap, the saturated nephelometer, the suppressed OPC-N3
+    bin 0, and the portal QA/QC removal interval coincide:
+        (a) 1-min QA/QC-processed portal PM1 and PM2.5 (ug/m3), with the
+            removed minutes left as a gap;
         (b) 5 s PMS5003 neph_bin0 (particles) with the 65535 ceiling marked;
-        (c) 5 s OPC-N3 bin0 number concentration (#/cm3), the suppression;
-        strip: the 5 s peak-window span and the portal QA/QC removal interval.
+        (c) 5 s OPC-N3 bin0 number concentration (particles/cm3);
+        strip: the span with the nephelometer at the 16-bit ceiling and the
+            portal QA/QC removal interval.
+    Vertical lines mark garage-door closure (solid) and portable air cleaner
+    activation (dashed), the same convention as the Burn 09 comparison figure.
 
-    The worked example is Burn 06 (see FIG2_BURN): its portal removal falls
-    fully inside the saturated, bin-0 suppressed window on the shared clock.
-    Uses the shared journal style and writes an ISO-dated PDF and 600 dpi PNG.
+    PM1 and PM2.5 are both shown because the two bin 0 channels count
+    sub-micron particles (PM1 is the closer size match) while the manuscript
+    discusses PM2.5.
 
     Parameters
     ----------
@@ -1206,6 +1245,7 @@ def _mpl_qaqc_timeseries_fig2(results: list[dict], out_dir=None, overwrite: bool
         Files written (empty if the example record is unavailable).
     """
     import matplotlib.dates as mdates
+    from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
 
     rec = next(
@@ -1219,17 +1259,24 @@ def _mpl_qaqc_timeseries_fig2(results: list[dict], out_dir=None, overwrite: bool
     if rec is None or pd.isna(rec.get("t_peak_start")):
         print(f"    [mpl] {FIG2_BURN} {FIG2_UNIT} not available for QA/QC time series.")
         return []
+    if not rec.get("saturated"):
+        # The strip bar is labeled as the saturated span, which only holds for a
+        # record whose window came from the nephelometer ceiling.
+        print(f"    [mpl] {FIG2_BURN} {FIG2_UNIT} did not saturate; QA/QC time series skipped.")
+        return []
 
     df = rec["_df"]
     t0 = rec["t_peak_start"]
     t1 = rec["t_peak_end"]
-    # Pad the display window so both the rising edge and the removal interval are
-    # visible even when the removal extends slightly past the saturated plateau.
+    garage = rec.get("_garage", pd.NaT)
+    pac_on = rec.get("_pac_on", pd.NaT)
+    # Pad the display window so the rising edge, the removal interval, and both
+    # burn-log events are visible.
     q0 = rec.get("portal_qaqc_removal_start")
     q1 = rec.get("portal_qaqc_removal_end")
     pad = pd.Timedelta(minutes=8)
-    span_lo = min([t for t in (t0, q0) if pd.notna(t)])
-    span_hi = max([t for t in (t1, q1) if pd.notna(t)])
+    span_lo = min([t for t in (t0, q0, garage) if pd.notna(t)])
+    span_hi = max([t for t in (t1, q1, pac_on) if pd.notna(t)])
     t_lo, t_hi = span_lo - pad, span_hi + pad
     sub = df[(df["timestamp"] >= t_lo) & (df["timestamp"] <= t_hi)].copy()
     if sub.empty:
@@ -1238,11 +1285,11 @@ def _mpl_qaqc_timeseries_fig2(results: list[dict], out_dir=None, overwrite: bool
 
     ts = sub["timestamp"]
     portal = rec.get("_portal")
-    if portal is not None and "pm1" in portal.columns:
+    if portal is not None:
         p_sub = portal[(portal["timestamp"] >= t_lo) & (portal["timestamp"] <= t_hi)]
     else:
         p_sub = None
-        print(f"    [mpl] {FIG2_BURN} {FIG2_UNIT}: no portal PM1; top panel left empty.")
+        print(f"    [mpl] {FIG2_BURN} {FIG2_UNIT}: no portal data; top panel left empty.")
 
     with journal_style():
         fig, axes = plt.subplots(
@@ -1252,20 +1299,32 @@ def _mpl_qaqc_timeseries_fig2(results: list[dict], out_dir=None, overwrite: bool
             sharex=True,
             gridspec_kw={"height_ratios": [2.2, 2.2, 2.2, 0.8]},
         )
-        ax_pm1, ax_neph, ax_opc, ax_strip = axes
+        ax_pm, ax_neph, ax_opc, ax_strip = axes
 
-        # (a) Portal 1-min PM1. Markers show each delivered minute, so the
-        # QA/QC-removed minutes read as a gap rather than an interpolated line.
+        # (a) Portal 1-min PM1 and PM2.5. Markers show each delivered minute, so
+        # the QA/QC-removed minutes read as a gap rather than an interpolated
+        # line. Line style and marker shape separate the two in greyscale.
+        pm_handles = []
         if p_sub is not None and not p_sub.empty:
-            ax_pm1.plot(
-                p_sub["timestamp"],
-                pd.to_numeric(p_sub["pm1"], errors="coerce"),
-                color=REF_LINE,
-                lw=1.0,
-                marker="o",
-                markersize=3,
-            )
-        ax_pm1.set_ylabel(AXIS_LABELS["pm1"])
+            for col, label, color, ls, mk in (
+                ("pm1", "PM1", REF_LINE, "-", "o"),
+                ("pm25", "PM2.5", JOURNAL_COLORS["vermillion"], "--", "s"),
+            ):
+                if col not in p_sub.columns:
+                    print(f"    [mpl] portal column {col} missing; trace skipped.")
+                    continue
+                ax_pm.plot(
+                    p_sub["timestamp"],
+                    pd.to_numeric(p_sub[col], errors="coerce"),
+                    color=color, lw=1.0, ls=ls, marker=mk, markersize=3,
+                )
+                pm_handles.append(
+                    Line2D([0], [0], color=color, lw=1.0, ls=ls, marker=mk,
+                           markersize=3, label=label)
+                )
+        if pm_handles:
+            ax_pm.legend(handles=pm_handles, loc="lower right", frameon=False)
+        ax_pm.set_ylabel(PORTAL_PM_LABEL)
 
         # (b) Nephelometer bin0 with the 16-bit ceiling.
         ax_neph.plot(
@@ -1274,7 +1333,7 @@ def _mpl_qaqc_timeseries_fig2(results: list[dict], out_dir=None, overwrite: bool
             color=JOURNAL_COLORS["vermillion"],
             lw=1.0,
         )
-        ax_neph.axhline(NEPH_CEILING, color=REF_LINE, ls="--", lw=0.5)
+        ax_neph.axhline(NEPH_CEILING, color=REF_LINE, ls=":", lw=0.5)
         # Headroom above the ceiling holds its label at the right edge, clear
         # of the panel letter and of the saturated trace.
         ax_neph.set_ylim(0, NEPH_CEILING * 1.15)
@@ -1292,13 +1351,13 @@ def _mpl_qaqc_timeseries_fig2(results: list[dict], out_dir=None, overwrite: bool
         ax_opc.plot(
             ts, pd.to_numeric(sub["bin0"], errors="coerce"), color=JOURNAL_COLORS["blue"], lw=1.0
         )
-        ax_opc.set_ylabel(AXIS_LABELS["opc_bin0"])
+        ax_opc.set_ylabel(OPC_BIN0_LABEL)
 
-        # Strip: peak-window span and portal QA/QC removal interval. The
-        # removal bar is hatched so the two bars differ in greyscale too.
-        win_color = JOURNAL_COLORS["vermillion"]
-        ax_strip.axvspan(t0, t1, ymin=0.55, ymax=0.95, color=win_color, alpha=0.35, lw=0)
-        handles = [Patch(color=win_color, alpha=0.35, lw=0, label="5 s peak window")]
+        # Strip: nephelometer-saturated span and portal QA/QC removal interval.
+        # The removal bar is hatched so the two bars differ in greyscale too.
+        sat_color = JOURNAL_COLORS["vermillion"]
+        ax_strip.axvspan(t0, t1, ymin=0.55, ymax=0.95, color=sat_color, alpha=0.35, lw=0)
+        handles = [Patch(color=sat_color, alpha=0.35, lw=0, label="Nephelometer saturated")]
         if pd.notna(q0) and pd.notna(q1):
             ax_strip.axvspan(
                 q0, q1, ymin=0.10, ymax=0.50,
@@ -1308,6 +1367,15 @@ def _mpl_qaqc_timeseries_fig2(results: list[dict], out_dir=None, overwrite: bool
                 Patch(facecolor="white", edgecolor=REF_LINE, hatch="////", lw=0.5,
                       label="Portal QA/QC removal")
             )
+
+        # Burn-log events on every panel, including the strip.
+        for t_ev, ls, label in ((garage, GARAGE_LS, "Garage closed"), (pac_on, PAC_LS, "PAC on")):
+            if pd.isna(t_ev) or not (t_lo <= t_ev <= t_hi):
+                continue
+            for ax in axes:
+                ax.axvline(t_ev, color=REF_LINE, ls=ls, lw=0.6)
+            handles.append(Line2D([0], [0], color=REF_LINE, ls=ls, lw=0.6, label=label))
+
         ax_strip.set_yticks([])
         ax_strip.spines["left"].set_visible(False)
         ax_strip.legend(
@@ -1315,17 +1383,13 @@ def _mpl_qaqc_timeseries_fig2(results: list[dict], out_dir=None, overwrite: bool
         )
         ax_strip.set_xlabel(AXIS_LABELS["local_time"])
 
-        # Vertical guides at the peak-window bounds and panel letters.
-        for letter, ax in zip("abc", (ax_pm1, ax_neph, ax_opc)):
-            ax.axvline(t0, color=NEUTRAL, ls=":", lw=0.5)
-            ax.axvline(t1, color=NEUTRAL, ls=":", lw=0.5)
+        for letter, ax in zip("abc", (ax_pm, ax_neph, ax_opc)):
             ax.text(
                 0.005, 0.97, letter, transform=ax.transAxes, fontweight="bold",
                 ha="left", va="top",
             )
 
-        # Thin the shared x-axis time ticks so the EDT labels do not collide
-        # on the narrow peak window.
+        # Thin the shared x-axis time ticks so the EDT labels do not collide.
         locator = mdates.AutoDateLocator(minticks=3, maxticks=6)
         ax_strip.xaxis.set_major_locator(locator)
         ax_strip.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
@@ -1397,175 +1461,202 @@ def _smooth_1min(vals: pd.Series) -> pd.Series:
     return pd.to_numeric(vals, errors="coerce").rolling(12, center=True, min_periods=6).mean()
 
 
-def _mpl_opc_timeseries_grid_v2(results: list[dict]) -> None:
+def _mpl_opc_timeseries_main(results: list[dict], out_dir=None, overwrite: bool = False) -> list:
     """
-    SI figure, replaces the bin-response grid: OPC-N3 bin 0 (0.35-0.46 um) and
-    bin 1 (0.46-0.66 um) number concentration versus minutes from ignition,
-    one row per burn and one column per location (Bedroom 2 left, Morning Room
-    right), log y on a shared scale.
+    Main-text figure (double column, moved from the SI): OPC-N3 bin 0
+    (0.35-0.46 um) and bin 1 (0.46-0.66 um) number concentration versus
+    minutes from ignition, one row per burn and one column per location
+    (Bedroom 2 left, Morning Room right), log y on a shared scale.
 
-    The dotted line is the bin 0 pre-fire background (mean over the
-    BASELINE_MIN minutes before ignition) and the shaded band is the peak
-    window, so a bin 0 drop below its own pre-fire level during the peak reads
-    directly against the simultaneous bin 1 rise. Traces are 1 min centered
-    means of the 5 s record so the 5 s counting noise does not hide the trend.
+    The dotted horizontal line is the bin 0 pre-fire background (mean over the
+    BASELINE_MIN minutes before ignition). Vertical lines mark garage-door
+    closure (solid) and portable air cleaner activation (dashed). Traces are
+    1-min centered means of the 5 s record. The panel tag reports whether the
+    nephelometer reached the 16-bit ceiling in that record.
 
     The SD-card OPC-N3 bins are per-volume number concentrations: bin masses
     computed from them reproduce the on-board opc_pm25 to within a near-constant
     factor, which would not hold for raw counts per 5 s sample.
+
+    Parameters
+    ----------
+    results : list of dict
+        Output of analyze_pair for every burn-unit pair.
+    out_dir : str or Path, optional
+        Output folder; defaults to the quantaq_figures folder.
+    overwrite : bool
+        Replace same-day files instead of raising.
+
+    Returns
+    -------
+    list of Path
+        Files written.
     """
     from matplotlib.lines import Line2D
-    from matplotlib.patches import Patch
 
     t_lo_min, t_hi_min = -30.0, 120.0
     units = ["MODULAIR-PM1", "MODULAIR-PM2"]
     burns = sorted({r["burn"] for r in results}, key=lambda b: int(b.replace("burn", "")))
     by_key = {(r["burn"], r["unit"]): r for r in results}
 
+    def _min_from(t_ev, ign):
+        return (t_ev - ign).total_seconds() / 60.0 if pd.notna(t_ev) else np.nan
+
     nrows = len(burns)
-    fig, axes = plt.subplots(
-        nrows, 2, figsize=(figsize("double")[0], 1.55 * nrows + 0.8),
-        sharex=True, sharey=True, squeeze=False,
-    )
-    for i, burn in enumerate(burns):
-        for j, unit in enumerate(units):
-            ax = axes[i, j]
-            rec = by_key.get((burn, unit))
-            if i == 0:
-                ax.set_title(UNIT_CONFIG[unit]["location_label"], fontsize=_FS, fontweight="bold")
-            if j == 0:
-                ax.set_ylabel(f"Burn {int(burn.replace('burn', '')):02d}", fontsize=_FS - 1)
-            ax.tick_params(labelsize=_FS - 2)
-            if rec is None or not rec.get("data_present") or pd.isna(rec.get("_ignition")):
-                ax.text(0.5, 0.5, "no 5 s data", transform=ax.transAxes,
-                        ha="center", va="center", fontsize=_FS - 3, color=SHADE)
-                continue
-            df = rec["_df"]
-            ign = rec["_ignition"]
-            tmin = (df["timestamp"] - ign).dt.total_seconds() / 60.0
-            m = (tmin >= t_lo_min) & (tmin <= t_hi_min)
-            color = UNIT_COLOR[unit]
-            for b, ls, lw in (("bin0", "-", 1.3), ("bin1", "--", 1.0)):
-                y = _smooth_1min(df[b])[m]
-                ax.semilogy(tmin[m], y.where(y > 0), color=color, ls=ls, lw=lw)
-            pre = rec.get("pre_count_bin0", np.nan)
-            if np.isfinite(pre) and pre > 0:
-                ax.axhline(pre, color=REF_LINE, ls=":", lw=1.0)
-            if pd.notna(rec.get("t_peak_start")) and pd.notna(rec.get("t_peak_end")):
-                a = (rec["t_peak_start"] - ign).total_seconds() / 60.0
-                b_ = (rec["t_peak_end"] - ign).total_seconds() / 60.0
-                ax.axvspan(a, b_, color=SHADE, alpha=SHADE_ALPHA, lw=0)
-            tags = []
-            if rec.get("bedroom_sealed"):
-                tags.append("sealed")
-            tags.append("saturated" if rec.get("saturated") else "not saturated")
-            ax.text(0.98, 0.94, ", ".join(tags), transform=ax.transAxes,
-                    ha="right", va="top", fontsize=_FS - 4)
-    for ax in axes[-1, :]:
-        ax.set_xlim(t_lo_min, t_hi_min)
+    # 1.1 in per row keeps seven rows near 9 in tall, inside an ACS page.
+    # The legend and column titles take about 0.8 in above the grid.
+    row_h = 1.1
+    fig_h = row_h * nrows + 1.25
+    with journal_style():
+        fig, axes = plt.subplots(
+            nrows, 2, figsize=(journal_figsize("double")[0], fig_h),
+            sharex=True, sharey=True, squeeze=False,
+        )
+        for i, burn in enumerate(burns):
+            for j, unit in enumerate(units):
+                ax = axes[i, j]
+                rec = by_key.get((burn, unit))
+                if i == 0:
+                    ax.set_title(UNIT_CONFIG[unit]["location_label"], fontweight="bold")
+                if j == 0:
+                    ax.set_ylabel(f"Burn {int(burn.replace('burn', '')):02d}")
+                if rec is None or not rec.get("data_present") or pd.isna(rec.get("_ignition")):
+                    ax.text(0.5, 0.5, "no 5 s data", transform=ax.transAxes,
+                            ha="center", va="center", color=NEUTRAL)
+                    continue
+                df = rec["_df"]
+                ign = rec["_ignition"]
+                tmin = (df["timestamp"] - ign).dt.total_seconds() / 60.0
+                m = (tmin >= t_lo_min) & (tmin <= t_hi_min)
+                color = UNIT_COLOR[unit]
+                for b, ls, lw in (("bin0", "-", 1.1), ("bin1", "--", 0.8)):
+                    y = _smooth_1min(df[b])[m]
+                    ax.semilogy(tmin[m], y.where(y > 0), color=color, ls=ls, lw=lw)
+                pre = rec.get("pre_count_bin0", np.nan)
+                if np.isfinite(pre) and pre > 0:
+                    ax.axhline(pre, color=REF_LINE, ls=":", lw=0.8)
+                for t_ev, ls in ((rec.get("_garage"), GARAGE_LS), (rec.get("_pac_on"), PAC_LS)):
+                    x_ev = _min_from(t_ev, ign)
+                    if np.isfinite(x_ev) and t_lo_min <= x_ev <= t_hi_min:
+                        ax.axvline(x_ev, color=REF_LINE, ls=ls, lw=0.6)
+                tags = []
+                if rec.get("bedroom_sealed"):
+                    tags.append("sealed")
+                tags.append("saturated" if rec.get("saturated") else "not saturated")
+                # Lower right is the emptiest corner once bin 1 has decayed.
+                ax.text(0.98, 0.06, ", ".join(tags), transform=ax.transAxes,
+                        ha="right", va="bottom", fontsize="small")
+        for ax in axes[-1, :]:
+            ax.set_xlim(t_lo_min, t_hi_min)
 
-    fig.supxlabel("Minutes from ignition", fontsize=_FS)
-    fig.supylabel("OPC-N3 number concentration (particles·cm⁻³)", fontsize=_FS)
-    handles = [
-        Line2D([0], [0], color="#555555", lw=1.3, ls="-", label="bin 0 (0.35 µm to 0.46 µm)"),
-        Line2D([0], [0], color="#555555", lw=1.0, ls="--", label="bin 1 (0.46 µm to 0.66 µm)"),
-        Line2D([0], [0], color=REF_LINE, lw=1.0, ls=":", label="bin 0 pre-fire background"),
-        Patch(color=SHADE, alpha=SHADE_ALPHA, label="peak window"),
-    ]
-    fig.legend(handles=handles, loc="upper center", ncol=2, fontsize=_FS - 2,
-               frameon=False, bbox_to_anchor=(0.5, 1.0 + 0.45 / (1.55 * nrows + 0.8)))
-
-    fig_dir = get_common_file("quantaq_figures")
-    save_fig(fig, fig_dir / "modulair_5sec_opc_timeseries_grid_v2.png")
-
-
-def _mpl_qaqc_overlap_v2(results: list[dict]) -> None:
-    """
-    SI figure, replaces the single-axis overlap chart: peak-window duration and
-    portal QA/QC removal duration (minutes) per burn, one panel per location.
-
-    Solid peak-window bars are windows defined by nephelometer bin 0 saturation
-    (first ceiling sample to recovery below RECOVERY_FRAC of the plateau).
-    Hatched bars are records that never saturated; their window comes from the
-    fallback rule (burn-log interval from garage-door closure to portable air
-    cleaner activation, else the AeroTrak or OPC-N3 peak). A burn with a portal
-    record but no removed minutes is labeled "none" so it is not mistaken for
-    missing data.
-    """
-    from matplotlib.patches import Patch
-
-    units = ["MODULAIR-PM1", "MODULAIR-PM2"]
-    removal_color = "#555555"
-    rows_all = [
-        r for r in results
-        if r.get("data_present") and pd.notna(r.get("t_peak_end"))
-        and not np.isnan(r.get("peak_window_duration_minutes", np.nan))
-    ]
-    if not rows_all:
-        print("    [mpl] no peak-window records for QA/QC overlap v2.")
-        return
-    methods = {r.get("peak_window_method") for r in rows_all if not r.get("saturated")}
-    fallback_label = (
-        "Peak window, not saturated\n(garage closure to PAC on)"
-        if methods <= {"fallback_burnlog"}
-        else "Peak window, not saturated\n(fallback rule)"
-    )
-
-    fig, axes = plt.subplots(1, 2, figsize=(figsize("double")[0], 3.2), sharey=True)
-    w = 0.38
-    for ax, unit in zip(axes, units):
-        rows = sorted([r for r in rows_all if r["unit"] == unit],
-                      key=lambda r: int(r["burn"].replace("burn", "")))
-        x = np.arange(len(rows))
-        color = UNIT_COLOR[unit]
-        for xi, r in zip(x, rows):
-            bar = ax.bar(xi - w / 2, r["peak_window_duration_minutes"], w,
-                         color=color, alpha=0.85, edgecolor=color)
-            if not r.get("saturated"):
-                bar[0].set_hatch("///")
-                bar[0].set_facecolor("white")
-            q = r.get("portal_qaqc_removal_duration_minutes", np.nan)
-            if np.isfinite(q) and q > 0:
-                ax.bar(xi + w / 2, q, w, color=removal_color, alpha=0.85)
-            else:
-                txt = "none" if r.get("portal_present") else "no portal\ndata"
-                ax.text(xi + w / 2, 0.4, txt, rotation=90, ha="center", va="bottom",
-                        fontsize=_FS - 4)
-        labels = [
-            f"{int(r['burn'].replace('burn', '')):02d}" + ("*" if r.get("bedroom_sealed") else "")
-            for r in rows
+        fig.supxlabel("Minutes from ignition")
+        fig.supylabel(OPC_NUMCONC_LABEL)
+        handles = [
+            Line2D([0], [0], color=NEUTRAL, lw=1.1, ls="-", label="bin 0 (0.35 µm to 0.46 µm)"),
+            Line2D([0], [0], color=NEUTRAL, lw=0.8, ls="--", label="bin 1 (0.46 µm to 0.66 µm)"),
+            Line2D([0], [0], color=REF_LINE, lw=0.8, ls=":", label="bin 0 pre-fire background"),
+            Line2D([0], [0], color=REF_LINE, lw=0.6, ls=GARAGE_LS, label="Garage closed"),
+            Line2D([0], [0], color=REF_LINE, lw=0.6, ls=PAC_LS, label="PAC on"),
         ]
-        ax.set_xticks(x)
-        ax.set_xticklabels(labels, fontsize=_FS - 2)
-        if any(r.get("bedroom_sealed") for r in rows):
-            ax.text(0.99, 0.97, "* Bedroom 2 sealed", transform=ax.transAxes,
-                    ha="right", va="top", fontsize=_FS - 4)
-        ax.set_xlabel("Burn", fontsize=_FS)
-        ax.set_title(UNIT_CONFIG[unit]["location_label"], fontsize=_FS, fontweight="bold")
-        ax.tick_params(labelsize=_FS - 1)
-    axes[0].set_ylabel("Duration (minutes)", fontsize=_FS)
+        # journal.mplstyle turns on constrained layout, so an "outside" legend
+        # gets its own band above the column titles at the fixed figure size.
+        fig.legend(handles=handles, loc="outside upper center", ncol=3, frameon=False)
 
-    from matplotlib.legend_handler import HandlerTuple
+        out_dir = out_dir or get_common_file("quantaq_figures")
+        return save_pdf_png(
+            fig, dated_stem(out_dir, "modulair_5sec_opc_timeseries_main"),
+            overwrite=overwrite,
+        )
 
-    # Peak-window bars take the location color, so each peak-window legend
-    # entry shows both location swatches; a single gray swatch read as the
-    # same mark as the gray QA/QC removal bars.
-    c1, c2 = UNIT_COLOR["MODULAIR-PM1"], UNIT_COLOR["MODULAIR-PM2"]
-    sat_handle = (Patch(facecolor=c1, edgecolor=c1, alpha=0.85),
-                  Patch(facecolor=c2, edgecolor=c2, alpha=0.85))
-    fb_handle = (Patch(facecolor="white", edgecolor=c1, hatch="///"),
-                 Patch(facecolor="white", edgecolor=c2, hatch="///"))
-    rm_handle = Patch(color=removal_color, alpha=0.85)
-    fig.legend(
-        [sat_handle, fb_handle, rm_handle],
-        ["Peak window, nephelometer saturated", fallback_label, "Portal QA/QC removal"],
-        handler_map={tuple: HandlerTuple(ndivide=None, pad=0.0)},
-        loc="upper center", ncol=3, fontsize=_FS - 3, frameon=False,
-        bbox_to_anchor=(0.5, 1.12), handlelength=3.0,
+
+def _write_saturation_qaqc_table(results: list[dict], out_dir=None, overwrite: bool = False) -> list:
+    """
+    SI table that replaces the peak-window / QA/QC duration bar chart: one row
+    per burn-unit record with nephelometer saturation, portal QA/QC removal,
+    and the portal peak PM1 and PM2.5.
+
+    Columns: Burn, Unit, Location, Bedroom sealed, Nephelometer saturated,
+    Minutes at 16-bit ceiling, Portal QA/QC minutes removed, Portal peak PM1
+    (ug/m3), Portal peak PM2.5 (ug/m3). The portal peak is the maximum 1-min
+    value from ignition to ignition + PORTAL_PEAK_WIN_H. A record with portal
+    data but no removed minutes reports 0; a record without portal data
+    reports blank (not imputed).
+
+    Parameters
+    ----------
+    results : list of dict
+        Output of analyze_pair for every burn-unit pair.
+    out_dir : str or Path, optional
+        Output folder; defaults to the quantaq_analysis folder.
+    overwrite : bool
+        Replace same-day files instead of raising.
+
+    Returns
+    -------
+    list of Path
+        The CSV and Markdown files written.
+    """
+    rows = []
+    for r in sorted(results, key=lambda r: (int(r["burn"].replace("burn", "")), r["unit"])):
+        if not r.get("data_present"):
+            continue
+        portal = r.get("_portal")
+        ign = r.get("_ignition", pd.NaT)
+        peak = {"pm1": np.nan, "pm25": np.nan}
+        if portal is not None and pd.notna(ign):
+            win = portal[
+                (portal["timestamp"] >= ign)
+                & (portal["timestamp"] <= ign + pd.Timedelta(hours=PORTAL_PEAK_WIN_H))
+            ]
+            for col in peak:
+                if col in win.columns:
+                    v = pd.to_numeric(win[col], errors="coerce")
+                    peak[col] = float(v.max()) if v.notna().any() else np.nan
+        removed = r.get("portal_qaqc_removal_duration_minutes", np.nan)
+        if portal is not None and not np.isfinite(removed):
+            removed = 0.0
+        # For fallback-windowed records n_sat_samples counts every sample in the
+        # window, not samples at the ceiling, so it is used only when saturated.
+        n_sat = r.get("n_sat_samples", 0) if r.get("saturated") else 0
+        n_sat = 0 if n_sat is None or not np.isfinite(n_sat) else n_sat
+        rows.append({
+            "Burn": f"{int(r['burn'].replace('burn', '')):02d}",
+            "Unit": r["unit"],
+            "Location": UNIT_CONFIG[r["unit"]]["location_label"],
+            "Bedroom sealed": "Yes" if r.get("bedroom_sealed") else "No",
+            "Nephelometer saturated": "Yes" if r.get("saturated") else "No",
+            "Minutes at 16-bit ceiling": round(n_sat * SAMPLE_PERIOD_S / 60.0, 1),
+            "Portal QA/QC minutes removed": removed,
+            "Portal peak PM1 (µg·m⁻³)": peak["pm1"],
+            "Portal peak PM2.5 (µg·m⁻³)": peak["pm25"],
+        })
+    table = pd.DataFrame(rows)
+    out_dir = Path(out_dir or get_common_file("quantaq_analysis"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = dated_stem(out_dir, "modulair_5sec_saturation_qaqc_table")
+    csv_path, md_path = stem.with_suffix(".csv"), stem.with_suffix(".md")
+    for p in (csv_path, md_path):
+        if p.exists() and not overwrite:
+            raise FileExistsError(f"{p} exists. Rerun with --overwrite or rename it.")
+    # Two significant figures for the peak PM values matches Table 3.
+    fmt = table.copy()
+    for col in ("Portal peak PM1 (µg·m⁻³)", "Portal peak PM2.5 (µg·m⁻³)"):
+        fmt[col] = fmt[col].map(lambda v: "" if not np.isfinite(v) else f"{float(f'{v:.2g}'):g}")
+    fmt["Portal QA/QC minutes removed"] = fmt["Portal QA/QC minutes removed"].map(
+        lambda v: "" if not np.isfinite(v) else f"{v:.0f}"
     )
-
-    fig_dir = get_common_file("quantaq_figures")
-    save_fig(fig, fig_dir / "modulair_5sec_qaqc_overlap_v2.png")
+    fmt.to_csv(csv_path, index=False, encoding="utf-8")
+    header = "| " + " | ".join(fmt.columns) + " |"
+    sep = "|" + "|".join("---" for _ in fmt.columns) + "|"
+    body = ["| " + " | ".join(str(v) for v in row) + " |" for row in fmt.itertuples(index=False)]
+    md_path.write_text(
+        "# MODULAIR-PM nephelometer saturation and portal QA/QC removal\n\n"
+        + "\n".join([header, sep, *body]) + "\n",
+        encoding="utf-8",
+    )
+    print(f"    [CSV] {csv_path.name}")
+    print(f"    [MD] {md_path.name}")
+    return [csv_path, md_path]
 
 
 # ==============================================================================
@@ -1959,6 +2050,12 @@ def _write_summary_md(results: list[dict], summary: dict) -> None:
 
 def main() -> None:
     """Run the full peak-window analysis: load, analyze, write CSV/MD/figures."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    parser.add_argument(
+        "--overwrite", action="store_true",
+        help="replace same-day ISO-dated figures and tables instead of raising",
+    )
+    args = parser.parse_args()
     warnings.filterwarnings("ignore")
     apply_est_style()
     print("\n" + "=" * 70)
@@ -2016,11 +2113,11 @@ def main() -> None:
         _bokeh_pair(rec)
 
     print("\nWriting matplotlib figures...")
-    _mpl_bin_response_grid(results)
-    _mpl_qaqc_timeseries_fig2(results)
-    _mpl_qaqc_overlap(results)
-    _mpl_opc_timeseries_grid_v2(results)
-    _mpl_qaqc_overlap_v2(results)
+    # The legacy bin-response grid and single-axis overlap chart draw the peak
+    # window and are no longer manuscript figures, so they are not regenerated.
+    _mpl_qaqc_timeseries_fig2(results, overwrite=args.overwrite)
+    _mpl_opc_timeseries_main(results, overwrite=args.overwrite)
+    _write_saturation_qaqc_table(results, overwrite=args.overwrite)
 
     print("\nWriting markdown outputs...")
     _write_summary_md(results, summary)

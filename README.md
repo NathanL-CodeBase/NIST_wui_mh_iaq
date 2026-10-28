@@ -50,6 +50,7 @@ NIST_wui_mh_iaq/
 │   │ # Compartmentalization & Mitigation Strategy Analysis
 │   ├── compartmentalization_strategy_comparison.py
 │   ├── decay_rate_barchart.py
+│   ├── decay_window_sensitivity.py
 │   │
 │   │ # Concentration Dynamics
 │   ├── conc_increase_to_decrease.py
@@ -254,6 +255,7 @@ WUI_smoke/
 #### Compartmentalization and Mitigation Strategy Analysis
 - **`compartmentalization_strategy_comparison.py`** — Comparison of compartmentalization approaches (open house vs. closed bedroom vs. closed bedroom with filtration)
 - **`decay_rate_barchart.py`** — Decay rate visualization and comparison
+- **`decay_window_sensitivity.py`** — Refits the published Morning Room decay rates (Burns 06 to 10) over one common window, the intersection of each instrument's published fit window, and reports the per-instrument change and the max/min spread in k. Reads `<instrument>_decay_and_CADR_edited.xlsx` and writes ISO-dated CSV, Markdown, and PDF/PNG outputs to `burn_calcs/decay_window_sensitivity/`; the published decay files are left unchanged
 
 #### Concentration Dynamics
 - **`conc_increase_to_decrease.py`** — Analysis of concentration increase vs. decay phase
@@ -264,8 +266,8 @@ WUI_smoke/
 #### Instrument Behavior Characterization
 - **`aerotrak_coincidence.py`** — Validates the transient optical-coincidence claim: detects bin reversals in the AeroTrak channels, estimates coincidence losses via a Poisson dead-time model, checks counts conservation, and cross-checks against co-located SMPS number concentration
 - **`modulair_5sec_io.py`** — Shared I/O for the MODULAIR-PM analyses: loads the raw on-instrument 5 s SD-card record (no QA/QC) and the QA/QC-filtered 1-minute portal product, with UTC-to-local and per-unit clock-correction handling
-- **`modulair_5sec_peak_window.py`** — Characterizes the raw 5 s MODULAIR-PM record during the smoke-peak window: PMS5003 nephelometer saturation, OPC-N3 small-bin suppression, and alignment with the portal QA/QC removal window
-- **`modulair_5sec_post_peak.py`** — Quantifies the post-peak OPC-N3 small-bin count inversion and contrasts it against the monotonic decay of co-located AeroTrak and SMPS measurements
+- **`modulair_5sec_peak_window.py`** — Characterizes the raw 5 s MODULAIR-PM record around the smoke peak: the span with the PMS5003 nephelometer at the 16-bit ceiling (65535), OPC-N3 bin 0 suppression, and how both line up with the portal QA/QC removal interval. Writes the Burn 06 QA/QC time series and the OPC-N3 time-series grid (main text), plus a per-record saturation and QA/QC table (SI). Run before `modulair_5sec_post_peak.py`
+- **`modulair_5sec_post_peak.py`** — Quantifies the post-peak OPC-N3 small-bin count inversion, measured from garage-door closure (t_ref). Reports portal PM2.5 over co-located AeroTrak PM3 at t_ref + 0.5 h and + 2 h, and Bedroom 2 OPC-N3 bin 0 over SMPS 300-437 nm number concentration at t_ref + 2 h; writes two SI figures
 
 #### Spatial Variation Analysis
 - **`spatial_variation_analysis.py`** — Spatial variability quantification (Peak Ratio Index, Average Ratio, RSD)
